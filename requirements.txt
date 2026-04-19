@@ -1,0 +1,9 @@
+langchain
+langchain-anthropic
+langchain-core
+tavily-python
+trafilatura
+praw
+wikipedia
+pydantic
+python-dotenv
