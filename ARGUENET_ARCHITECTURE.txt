@@ -1,0 +1,370 @@
+ArgueNet Architecture Summary
+=============================
+
+What ArgueNet Is
+----------------
+ArgueNet is a multi-agent debate system built around a shared question.
+It uses several role-specific agents to propose arguments, challenge each
+other, score argument quality, and stop when the debate appears to have
+converged, stalled, reached quorum, or hit a round limit.
+
+The current runtime entry point is:
+  - arguenet/main.py
+
+At a high level, the system does this:
+  1. Build all agents with their prompts, temperatures, and tools.
+  2. Run a debate round where non-moderator agents produce arguments.
+  3. Ask the moderator to score those arguments.
+  4. Run a rebuttal pass for the non-moderator agents.
+  5. Score again, check termination rules, and either continue or stop.
+  6. Build a final consensus object from the last round.
+
+
+Agent Summary
+-------------
+All agent definitions live in arguenet/agents/.
+
+1. skeptic
+   File: arguenet/agents/skeptic.py
+   Purpose: challenge overstatements and force a higher burden of proof.
+   Typical behavior: attacks weak assumptions, asks for justification, and
+   focuses on claims that sound too broad or too confident.
+   Tools: reddit, news.
+
+2. advocate
+   File: arguenet/agents/advocate.py
+   Purpose: make the strongest defensible case for the main position.
+   Typical behavior: steelmans the position, frames benefits clearly, and
+   tries to preserve the strongest version of the claim.
+   Tools: news, wiki.
+
+3. devils_advocate
+   File: arguenet/agents/devils_advocate.py
+   Purpose: attack emerging consensus and stress-test the discussion.
+   Typical behavior: introduces opposing frames, edge cases, and failure
+   modes even if the room seems to be converging.
+   Tools: reddit, news.
+
+4. empiricist
+   File: arguenet/agents/empiricist.py
+   Purpose: force evidence-based debate and reject unsupported claims.
+   Typical behavior: asks for evidence, prefers sourced claims, and uses the
+   scraper path when a linked article needs more detail than a snippet.
+   Tools: news, wiki, scraper.
+
+5. moderator
+   File: arguenet/agents/moderator.py
+   Purpose: remain neutral and score argument quality.
+   Typical behavior: assigns scores for relevance, evidence quality, novelty,
+   and rebuttal force, and identifies the weakest dimension that each agent
+   should improve.
+   Tools: none.
+
+
+How Agent Wiring Works
+----------------------
+The shared construction logic is in arguenet/agents/base.py.
+
+Important details:
+  - AGENT_MODULES maps agent ids to their modules.
+  - build_agent() creates a ChatAnthropic model using ARGUENET_MODEL.
+  - Each agent gets a system prompt and a tool list.
+  - build_agents() returns the full runtime dictionary used by main.py.
+
+The main tuning values are in arguenet/config.py:
+  - AGENT_TEMPS controls temperature by role.
+  - MAX_ROUNDS controls the default round cap.
+  - CONVERGENCE_THRESHOLD, SIMILARITY_THRESHOLD, and QUORUM drive stopping.
+
+
+What The Debate Folder Is For
+-----------------------------
+The arguenet/debate/ package contains the control logic for running the
+debate itself. Think of it as the engine room of the project.
+
+1. arguenet/debate/round.py
+   This is the core orchestration for a round.
+
+   Main responsibilities:
+     - serialize debate state into prompts
+     - invoke agents asynchronously
+     - normalize inconsistent model output into the expected schema
+     - run an initial argument pass
+     - ask the moderator to score
+     - run a rebuttal pass
+
+   This file matters because LLMs do not always return the exact structure
+   requested. round.py contains the fallback and normalization logic that
+   turns imperfect model output into valid Argument and ModeratorScore data.
+
+2. arguenet/debate/termination.py
+   This file decides when the debate should stop.
+
+   Current stop conditions:
+     - convergence: average position_delta is small
+     - stalemate: the latest round looks too similar to the prior round
+     - quorum: enough agents have high confidence
+     - round_cap: maximum number of rounds reached
+
+3. arguenet/debate/consensus.py
+   This file converts the final round into the returned output payload.
+
+   Current behavior:
+     - pick the top-scoring argument as the answer
+     - return the answer confidence
+     - include a reasoning_trace from the last arguments
+     - include a dissent_log for lower-confidence agents
+
+
+End-To-End Flow
+---------------
+The main runtime loop is in arguenet/main.py.
+
+The flow is:
+  1. Load environment variables.
+  2. Build all agents.
+  3. For each round:
+     - run_round() asks the debate agents to produce arguments
+     - score_round() scores the resulting outputs
+     - should_terminate() decides whether to continue
+  4. build_consensus() produces the final JSON response.
+
+One subtle but important detail:
+  - run_round() already performs an internal score step between the initial
+    argument pass and the rebuttal pass.
+  - main.py then calls score_round() again on the final round output.
+  - That means each round effectively has an intermediate score and a final
+    score, with the final one being used for termination and consensus.
+
+
+Tool Layer
+----------
+The tool integration lives in arguenet/tools/.
+
+Relevant files:
+  - search.py: central tool registration and gating
+  - reddit.py: Reddit public JSON endpoint search
+  - wiki.py: Wikipedia summaries
+  - scraper.py: article extraction
+  - registry.py: per-round source deduplication
+
+How it works:
+  - search.py decides which tools each agent can use.
+  - registry.py tracks which sources were already claimed during a round so
+    tools do not repeatedly fetch the same source key.
+  - reddit.py currently uses public Reddit JSON search endpoints, so OAuth
+    credentials are not required for read-only retrieval.
+  - news search depends on Tavily and is skipped when TAVILY_API_KEY is not
+    set.
+
+
+Data Model
+----------
+The schemas in arguenet/config.py are the contract between the model and the
+runtime.
+
+Argument fields:
+  - agent_id
+  - round
+  - update_type
+  - update_reasoning
+  - targets
+  - argument
+  - claims
+  - confidence
+  - position_delta
+  - sources
+
+ModeratorScore fields:
+  - agent_id
+  - round
+  - relevance
+  - evidence_quality
+  - novelty
+  - rebuttal_force
+  - weighted_score
+  - weakest_dimension
+  - you_must_respond_to
+
+If you change either schema, you almost always also need to update:
+  - arguenet/debate/round.py normalization logic
+  - prompts that instruct the model to return those fields
+  - consensus or termination code if it depends on the changed fields
+
+
+How To Make Additional Changes
+------------------------------
+This is the practical roadmap for expanding the project.
+
+1. Add a new debate agent
+   Steps:
+     - create a new module in arguenet/agents/
+     - define SYSTEM_PROMPT and SOURCE_TYPES in that module
+     - register it in AGENT_MODULES in arguenet/agents/base.py
+     - add a temperature entry in AGENT_TEMPS in arguenet/config.py
+   Optional follow-up:
+     - adjust quorum or termination logic if adding more agents changes what
+       counts as consensus.
+
+2. Add a new tool
+   Steps:
+     - create a tool file in arguenet/tools/
+     - expose one or more @tool functions
+     - register the tool in all_tools inside arguenet/tools/search.py
+     - add the tool name to an agent's SOURCE_TYPES list
+   Good use cases:
+     - academic paper retrieval
+     - company filings
+     - local document search
+     - a more reliable web search source
+
+3. Improve the final answer format
+   Edit arguenet/debate/consensus.py.
+   You can change the output to include:
+     - top sources
+     - winning and losing claims
+     - confidence breakdowns
+     - moderator rationale
+     - a structured pros and cons section
+
+4. Change when the system stops
+   Edit arguenet/debate/termination.py.
+   You can introduce rules such as:
+     - minimum evidence count before stopping
+     - stricter semantic diversity checks
+     - separate convergence rules per agent type
+     - early stop when moderator scores stabilize
+
+5. Tighten model reliability
+   Edit arguenet/debate/round.py and the agent prompts.
+   Common improvements:
+     - stronger output schema instructions
+     - aliases for alternate LLM field names
+     - more robust JSON extraction
+     - better fallback conversion from plain text to schema
+
+6. Add memory or persistent state
+   Likely touch:
+     - arguenet/main.py
+     - arguenet/debate/round.py
+     - a new persistence module
+   Example expansions:
+     - save debate transcripts
+     - cache tool results across rounds
+     - compare multiple debate runs on the same question
+
+7. Add a UI or service wrapper
+   The current system is CLI-first. To expand it:
+     - call arguenet.main.main(question) from a web API
+     - stream round-by-round updates to a frontend
+     - persist final consensus outputs in a database
+
+
+Recommended Extension Order
+---------------------------
+If you want to expand the project without destabilizing it, this order is
+the safest:
+
+  1. improve prompts and normalization in round.py
+  2. improve consensus formatting in consensus.py
+  3. add better tools in tools/
+  4. add a new specialized agent
+  5. add persistence and a UI layer
+
+The reason is simple: the current system's main fragility is model output
+shape, not the outer architecture.
+
+
+ASCII Diagram
+-------------
+
+                         +----------------------+
+Question --------------> |   arguenet/main.py   |
+                         +----------+-----------+
+                                    |
+                                    v
+                         +----------------------+
+                         |  build_agents()      |
+                         |  agents/base.py      |
+                         +----------+-----------+
+                                    |
+                    +---------------+----------------+
+                    |               |                |
+                    v               v                v
+             +-----------+   +-----------+   +---------------+
+             | Advocate  |   | Skeptic   |   | Devil's Adv.  |
+             +-----------+   +-----------+   +---------------+
+                    |               |                |
+                    +---------------+----------------+
+                                    |
+                                    v
+                             +-------------+
+                             | Empiricist  |
+                             +-------------+
+                                    |
+                                    v
+                         +----------------------+
+                         | debate/round.py      |
+                         | argue -> score ->    |
+                         | rebut -> normalize   |
+                         +----------+-----------+
+                                    |
+                                    v
+                         +----------------------+
+                         | Moderator            |
+                         | score_round()        |
+                         +----------+-----------+
+                                    |
+                      +-------------+-------------+
+                      |                           |
+                      v                           v
+          +----------------------+     +----------------------+
+          | termination.py       |     | consensus.py         |
+          | stop or continue     |     | final answer payload |
+          +----------------------+     +----------------------+
+
+
+Mermaid Diagram Source
+----------------------
+You can paste this into any Mermaid renderer.
+
+flowchart TD
+    Q[Question] --> M[arguenet/main.py]
+    M --> B[agents/base.py build_agents]
+    B --> A[Advocate]
+    B --> S[Skeptic]
+    B --> D[Devil's Advocate]
+    B --> E[Empiricist]
+    A --> R[debate/round.py]
+    S --> R
+    D --> R
+    E --> R
+    R --> MOD[Moderator / score_round]
+    MOD --> T[debate/termination.py]
+    T -->|continue| R
+    T -->|stop| C[debate/consensus.py]
+
+
+Files To Read First Before Modifying The System
+-----------------------------------------------
+If someone new is extending ArgueNet, these are the best starting points:
+  - arguenet/main.py
+  - arguenet/config.py
+  - arguenet/agents/base.py
+  - arguenet/debate/round.py
+  - arguenet/debate/termination.py
+  - arguenet/debate/consensus.py
+  - arguenet/tools/search.py
+
+
+Short Version
+-------------
+ArgueNet is organized as:
+  - agent definitions in arguenet/agents/
+  - debate orchestration in arguenet/debate/
+  - retrieval tools in arguenet/tools/
+  - shared schemas and thresholds in arguenet/config.py
+  - entry point in arguenet/main.py
+
+If you want to expand it, the cleanest path is to treat agents, tools,
+termination, and consensus as separate layers and evolve one layer at a time.
