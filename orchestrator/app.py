@@ -1,12 +1,23 @@
+from __future__ import annotations
+
+import asyncio
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional
+from uuid import uuid4
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Optional
-from uuid import uuid4
-from datetime import datetime
-import random
 
-app = FastAPI(title="ArgueNet Orchestrator", version="0.1.0")
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from arguenet.main import main as run_arguenet_main
+
+app = FastAPI(title="ArgueNet Orchestrator", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,6 +30,7 @@ app.add_middleware(
 # In-memory storage
 # ----------------------------
 debates: Dict[str, dict] = {}
+ROLE_ORDER = ["advocate", "critic", "moderator"]
 
 
 # ----------------------------
@@ -52,111 +64,51 @@ class DebateResponse(BaseModel):
     created_at: str
 
 
-# ----------------------------
-# Mock agent services
-# Replace these later with real HTTP calls
-# ----------------------------
-def mock_advocate(question: str, round_num: int) -> dict:
-    templates = [
-        "AI can improve efficiency, consistency, and scalability in handling this issue.",
-        "A strong case can be made in favor of this because it saves time and supports better decision-making.",
-        "The advantages include speed, automation, and broader access to useful analysis."
-    ]
-    return {
-        "sender": "advocate",
-        "position": "support",
-        "content": random.choice(templates) + f" Question: {question}",
-        "confidence": round(random.uniform(0.72, 0.90), 2),
-        "round": round_num,
-        "timestamp": datetime.utcnow().isoformat()
-    }
+def _extract_role_texts(result: dict) -> dict[str, str]:
+    role_text = {role: "" for role in ROLE_ORDER}
+    dissent_items = result.get("dissent_log", []) or []
+
+    for item in dissent_items:
+        agent = str(item.get("agent", "")).lower()
+        objection = str(item.get("objection", "")).strip()
+        if not objection:
+            continue
+        if "advocate" in agent and not role_text["advocate"]:
+            role_text["advocate"] = objection
+        elif any(token in agent for token in ["skeptic", "devils", "critic"]) and not role_text["critic"]:
+            role_text["critic"] = objection
+
+    trace = [str(x).strip() for x in (result.get("reasoning_trace", []) or []) if str(x).strip()]
+    for idx, role in enumerate(["advocate", "critic"]):
+        if not role_text[role] and idx < len(trace):
+            role_text[role] = trace[idx]
+
+    role_text["moderator"] = (
+        f"Termination reason: {result.get('termination_reason', 'unknown')}. "
+        f"Consensus confidence: {float(result.get('confidence', 0.0)):.2f}."
+    )
+    return role_text
 
 
-def mock_critic(question: str, round_num: int) -> dict:
-    templates = [
-        "There are risks involving bias, oversimplification, and lack of context.",
-        "A strong objection is that this can reduce fairness, transparency, or human judgment.",
-        "The downside is that automation may ignore nuance and create unreliable outcomes."
-    ]
-    return {
-        "sender": "critic",
-        "position": "oppose",
-        "content": random.choice(templates) + f" Question: {question}",
-        "confidence": round(random.uniform(0.68, 0.88), 2),
-        "round": round_num,
-        "timestamp": datetime.utcnow().isoformat()
-    }
+def _build_messages(result: dict, failed_nodes: List[str], round_num: int) -> List[dict]:
+    now = datetime.utcnow().isoformat()
+    role_text = _extract_role_texts(result)
+    messages: List[dict] = []
 
-
-def mock_moderator(question: str, prior_messages: List[dict], round_num: int) -> dict:
-    advocate_msg = next((m for m in prior_messages if m["sender"] == "advocate"), None)
-    critic_msg = next((m for m in prior_messages if m["sender"] == "critic"), None)
-
-    advocate_summary = advocate_msg["content"] if advocate_msg else "No advocate response."
-    critic_summary = critic_msg["content"] if critic_msg else "No critic response."
-
-    return {
-        "sender": "moderator",
-        "position": "neutral",
-        "content": (
-            "The advocate emphasizes benefits such as efficiency and scale, while the critic "
-            "emphasizes risks such as bias and lack of nuance. A balanced conclusion may combine "
-            "automation with human oversight.\n\n"
-            f"Advocate: {advocate_summary}\n"
-            f"Critic: {critic_summary}"
-        ),
-        "confidence": 0.82,
-        "round": round_num,
-        "timestamp": datetime.utcnow().isoformat()
-    }
-
-
-# ----------------------------
-# Simple consensus logic
-# ----------------------------
-def run_consensus(question: str, messages: List[dict], failed_nodes: List[str]) -> dict:
-    responses_received = len(messages)
-    quorum_met = responses_received >= 2
-
-    if not quorum_met:
-        return {
-            "status": "failed",
-            "final_answer": "Consensus could not be reached because quorum was not met.",
-            "agreement_score": 0.0,
-            "quorum_met": False,
-            "failed_nodes": failed_nodes
-        }
-
-    moderator_msg = next((m for m in messages if m["sender"] == "moderator"), None)
-    advocate_msg = next((m for m in messages if m["sender"] == "advocate"), None)
-    critic_msg = next((m for m in messages if m["sender"] == "critic"), None)
-
-    if moderator_msg:
-        final_answer = (
-            "Final decision: Use a balanced approach. "
-            "The system recommends considering both benefits and risks, with human oversight where needed."
+    for role in ROLE_ORDER:
+        if role in failed_nodes:
+            continue
+        messages.append(
+            {
+                "sender": role,
+                "position": "neutral" if role == "moderator" else ("support" if role == "advocate" else "oppose"),
+                "content": role_text.get(role) or "No response generated.",
+                "confidence": round(float(result.get("confidence", 0.0)), 2),
+                "round": round_num,
+                "timestamp": now,
+            }
         )
-        agreement_score = 0.67
-    elif advocate_msg and critic_msg:
-        final_answer = (
-            "Final decision: The debate contains both support and opposition, "
-            "so the result remains contested but valid viewpoints were collected."
-        )
-        agreement_score = 0.50
-    elif advocate_msg:
-        final_answer = "Final decision: The available response supports proceeding with the proposed approach."
-        agreement_score = 0.60
-    else:
-        final_answer = "Final decision: The available response raises concerns and suggests caution."
-        agreement_score = 0.60
-
-    return {
-        "status": "completed",
-        "final_answer": final_answer,
-        "agreement_score": agreement_score,
-        "quorum_met": True,
-        "failed_nodes": failed_nodes
-    }
+    return messages
 
 
 # ----------------------------
@@ -166,42 +118,49 @@ def execute_debate(question: str, simulate_failure: bool = False, failed_node: O
     debate_id = str(uuid4())
     created_at = datetime.utcnow().isoformat()
     round_num = 1
-    messages = []
-    failed_nodes = []
-
-    services = ["advocate", "critic", "moderator"]
-
-    if simulate_failure and failed_node in services:
+    failed_nodes: List[str] = []
+    if simulate_failure and failed_node in ROLE_ORDER:
         failed_nodes.append(failed_node)
 
-    # Step 1: advocate
-    if "advocate" not in failed_nodes:
-        advocate_response = mock_advocate(question, round_num)
-        messages.append(advocate_response)
+    try:
+        pipeline_result = asyncio.run(run_arguenet_main(question))
+    except Exception as exc:
+        return {
+            "debate_id": debate_id,
+            "question": question,
+            "status": "failed",
+            "round": round_num,
+            "messages": [],
+            "final_answer": f"Debate execution failed: {exc}",
+            "agreement_score": 0.0,
+            "quorum_met": False,
+            "failed_nodes": failed_nodes,
+            "created_at": created_at,
+        }
 
-    # Step 2: critic
-    if "critic" not in failed_nodes:
-        critic_response = mock_critic(question, round_num)
-        messages.append(critic_response)
+    messages = _build_messages(pipeline_result, failed_nodes, round_num)
+    if not messages or len(messages) < 2:
+        status = "failed"
+        quorum_met = False
+    elif simulate_failure and failed_node == "moderator":
+        status = "failed"
+        quorum_met = False
+    else:
+        status = "completed"
+        quorum_met = True
 
-    # Step 3: moderator
-    if "moderator" not in failed_nodes:
-        moderator_response = mock_moderator(question, messages, round_num)
-        messages.append(moderator_response)
-
-    # Step 4: consensus
-    consensus = run_consensus(question, messages, failed_nodes)
-
+    final_answer = str(pipeline_result.get("answer", "")).strip() or "No consensus answer returned."
+    agreement_score = round(float(pipeline_result.get("confidence", 0.0)), 2)
     debate_record = {
         "debate_id": debate_id,
         "question": question,
-        "status": consensus["status"],
+        "status": status,
         "round": round_num,
         "messages": messages,
-        "final_answer": consensus["final_answer"],
-        "agreement_score": consensus["agreement_score"],
-        "quorum_met": consensus["quorum_met"],
-        "failed_nodes": consensus["failed_nodes"],
+        "final_answer": final_answer,
+        "agreement_score": agreement_score,
+        "quorum_met": quorum_met,
+        "failed_nodes": failed_nodes,
         "created_at": created_at
     }
 
