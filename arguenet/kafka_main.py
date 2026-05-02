@@ -416,12 +416,15 @@ class KafkaDebateRunner:
             # first poll, so we must call it before producing any messages.
             await loop.run_in_executor(None, lambda: result_consumer.poll(timeout_ms=5000))
 
-            history: list[Argument] = []
+            history: list[list[Argument]] = []
             all_scores: list[ModeratorScore] = []
             reason = "round_cap"
 
             for round_num in range(1, max_rounds + 1):
                 logger.info("━━━ debate=%s  round %d / %d ━━━", debate_id, round_num, max_rounds)
+
+                # Flatten history (list of rounds) into a single list for prompts
+                flat_history = [a for round_args in history for a in round_args]
 
                 # ── argue ────────────────────────────────────────────────────
                 arguments = await _run_argue_phase(
@@ -429,7 +432,7 @@ class KafkaDebateRunner:
                     round_num=round_num,
                     question=question,
                     agents=agents,
-                    history=history,
+                    history=flat_history,
                     scores=all_scores,
                     producer=producer,
                     result_consumer=result_consumer,
@@ -443,7 +446,7 @@ class KafkaDebateRunner:
                     question=question,
                     agents=agents,
                     arguments=arguments,
-                    history=history,
+                    history=flat_history,
                     producer=producer,
                     result_consumer=result_consumer,
                     loop=loop,
@@ -457,7 +460,7 @@ class KafkaDebateRunner:
                     agents=agents,
                     prior_arguments=arguments,
                     scores=mid_scores,
-                    history=history,
+                    history=flat_history,
                     producer=producer,
                     result_consumer=result_consumer,
                     loop=loop,
@@ -470,7 +473,7 @@ class KafkaDebateRunner:
                     question=question,
                     agents=agents,
                     arguments=rebuttals,
-                    history=history,
+                    history=flat_history,
                     producer=producer,
                     result_consumer=result_consumer,
                     loop=loop,
