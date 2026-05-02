@@ -86,7 +86,7 @@ def build_agent(agent_id: str, system_prompt: str, source_types: list[str]) -> A
         raise RuntimeError("OPENROUTER_API_KEY is required to run ArgueNet agents")
 
     llm = ChatOpenAI(
-        model=os.getenv("ARGUENET_MODEL", "openai/gpt-4o-mini"),
+        model=os.getenv("ARGUENET_MODEL", "meta-llama/llama-3.1-8b-instruct:free"),
         temperature=AGENT_TEMPS[agent_id],
         api_key=api_key,
         base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
