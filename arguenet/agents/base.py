@@ -10,11 +10,11 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 try:
     from ..config import AGENT_TEMPS
     from ..tools.search import build_tools
-    from . import advocate, devils_advocate, empiricist, moderator, skeptic
+    from . import advocate, devils_advocate, empiricist, moderator, skeptic, scorer
 except ImportError:  # pragma: no cover
     from config import AGENT_TEMPS
     from tools.search import build_tools
-    from agents import advocate, devils_advocate, empiricist, moderator, skeptic
+    from agents import advocate, devils_advocate, empiricist, moderator, skeptic, scorer
 
 AGENT_MODULES = {
     "skeptic": skeptic,
@@ -22,6 +22,7 @@ AGENT_MODULES = {
     "devils_advocate": devils_advocate,
     "empiricist": empiricist,
     "moderator": moderator,
+    "scorer": scorer,
 }
 
 
