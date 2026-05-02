@@ -7,3 +7,4 @@ praw
 wikipedia
 pydantic
 python-dotenv
+confluent-kafka

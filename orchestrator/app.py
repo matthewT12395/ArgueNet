@@ -15,7 +15,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from arguenet.main import main as run_arguenet_main
+from arguenet.kafka_main import main as run_arguenet_main
 
 app = FastAPI(title="ArgueNet Orchestrator", version="0.2.0")
 
