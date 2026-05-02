@@ -283,31 +283,30 @@ def _normalize_round_score_payload(payload: dict, *, round_num: int, arguments: 
     out = dict(payload)
     out["round"] = int(out.get("round") or round_num)
     
+    # Get all scores from scorer (should be 0-100)
+    all_scores = out.get("all_scores") or {}
+    if isinstance(all_scores, dict):
+        all_scores = {str(k): float(v) for k, v in all_scores.items()}
+    else:
+        # Fallback to moderator scores if not provided
+        all_scores = {s.agent_id: s.weighted_score for s in moderator_scores}
+    out["all_scores"] = all_scores
+    
     # Determine winner from scores
     winner = out.get("winner") or out.get("top_performer")
     winner_score = 0.0
     
     # If winner not explicitly provided, determine from scores
     if not winner:
-        score_dict = {s.agent_id: s.weighted_score for s in moderator_scores}
-        if score_dict:
-            winner = max(score_dict, key=score_dict.get)
-            winner_score = score_dict[winner]
+        if all_scores:
+            winner = max(all_scores, key=all_scores.get)
+            winner_score = all_scores[winner]
     else:
         winner = str(winner)
-        score_dict = {s.agent_id: s.weighted_score for s in moderator_scores}
-        winner_score = score_dict.get(winner, 0.0)
+        winner_score = all_scores.get(winner, 0.0)
     
     out["winner"] = winner
     out["winner_score"] = float(out.get("winner_score") or winner_score)
-    
-    # Get all scores
-    all_scores = out.get("all_scores") or {}
-    if isinstance(all_scores, dict):
-        all_scores = {str(k): float(v) for k, v in all_scores.items()}
-    else:
-        all_scores = {s.agent_id: s.weighted_score for s in moderator_scores}
-    out["all_scores"] = all_scores
     
     # Get all arguments
     all_arguments = out.get("all_arguments") or {}
@@ -316,6 +315,13 @@ def _normalize_round_score_payload(payload: dict, *, round_num: int, arguments: 
     else:
         all_arguments = {arg.agent_id: arg.argument for arg in arguments}
     out["all_arguments"] = all_arguments
+    
+    # Get fact checks
+    fact_checks = out.get("fact_checks") or {}
+    if isinstance(fact_checks, dict):
+        out["fact_checks"] = {str(k): str(v) for k, v in fact_checks.items()}
+    else:
+        out["fact_checks"] = {}
     
     out["summary"] = str(out.get("summary") or "Round evaluation complete.")
     
@@ -337,14 +343,15 @@ def _normalize_round_score_payload(payload: dict, *, round_num: int, arguments: 
 
 
 async def run_scorer(round_num: int, question: str, scorer_agent, arguments: list[Argument], moderator_scores: list[ModeratorScore], history: list[Argument]) -> RoundScore:
-    """Run the scorer agent to evaluate all participant agents."""
-    # Create a comprehensive scoring prompt
+    """Run the scorer agent to evaluate all participant agents with fact-checking."""
+    # Create a comprehensive scoring prompt with arguments and sources
     arguments_summary = json.dumps([
         {
             "agent": arg.agent_id,
             "argument": arg.argument,
-            "confidence": arg.confidence,
             "claims": arg.claims,
+            "sources": arg.sources,
+            "confidence": arg.confidence,
         }
         for arg in arguments
     ], indent=2)
@@ -362,43 +369,53 @@ async def run_scorer(round_num: int, question: str, scorer_agent, arguments: lis
     ], indent=2)
     
     scorer_prompt = f"""
-You are evaluating a debate round.
+You are evaluating a debate round with RIGOROUS FACT-CHECKING.
 Question: {question}
 Round: {round_num}
 
 Current arguments from this round:
 {arguments_summary}
 
-Moderator scores for these arguments:
+Moderator quality scores for these arguments:
 {scores_summary}
 
 Your task is to:
-1. Determine the winner (best performing agent) based on the moderator scores and arguments
-2. Summarize key insights and breakthroughs from this round
-3. Provide specific, actionable feedback for EACH agent for their NEXT contribution
+1. FACT-CHECK each agent's claims against their sources or your own knowledge
+2. Score each agent numerically (0-100) on:
+   - Factual Accuracy: How many facts are verifiable/true
+   - Evidence Quality: How well sources support claims
+   - Argument Strength: Logical coherence and persuasiveness
+   - Source Credibility: How reliable are the sources cited
+   - OVERALL SCORE = (Accuracy*0.3 + Evidence*0.25 + Strength*0.25 + Credibility*0.2)
+3. Identify the winner (highest overall score)
+4. Summarize key insights and any factual errors found
+5. Provide specific, actionable feedback for EACH agent for their NEXT contribution
 
-For each agent, identify:
-- What they did well
-- What they should improve
-- Specific suggestions for the next round
-- How their arguments compared to others
+For each agent specifically note:
+- Factual errors or unsupported claims
+- Quality of evidence and sources
+- Argument coherence
+- Comparison to other agents
+- Specific improvements needed
 
 Return ONLY a JSON object matching this schema exactly:
 {{
   "round": {round_num},
-  "winner": "agent_name",
+  "winner": "agent_name_with_highest_score",
   "winner_score": 0.0,
-  "all_scores": {{"agent_name": 0.0}},
+  "all_scores": {{"agent_name": 75.5, "agent_name2": 68.3}},
   "all_arguments": {{"agent_name": "their argument text"}},
-  "summary": "Overall summary of round",
+  "fact_checks": {{"agent_name": "factual accuracy summary and any errors"}},
+  "summary": "Overall summary of round with fact-checking results",
   "key_insights": ["insight1", "insight2"],
-  "feedback_for_agents": {{"agent_name": "personalized feedback"}}
+  "feedback_for_agents": {{"agent_name": "personalized feedback with fact-check results and improvement suggestions"}}
 }}
 """
     
     schema_msg = (
         "Return ONLY a JSON object with keys: "
-        "round, winner, winner_score, all_scores, all_arguments, summary, key_insights, feedback_for_agents."
+        "round, winner, winner_score, all_scores, all_arguments, fact_checks, summary, key_insights, feedback_for_agents. "
+        "Ensure all_scores contains numerical scores (0-100) for every agent."
     )
     
     for _ in range(3):
@@ -432,4 +449,3 @@ Return ONLY a JSON object matching this schema exactly:
         key_insights=["Round completed successfully."],
         feedback_for_agents={arg.agent_id: "Continue building on your arguments." for arg in arguments},
     )
-

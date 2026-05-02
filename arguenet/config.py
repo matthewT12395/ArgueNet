@@ -32,8 +32,9 @@ class RoundScore(BaseModel):
     round: int
     winner: str
     winner_score: float
-    all_scores: dict[str, float]  # agent_id -> score
+    all_scores: dict[str, float]  # agent_id -> score (0-100)
     all_arguments: dict[str, str]  # agent_id -> their argument
+    fact_checks: dict[str, str] = {}  # agent_id -> fact-check summary
     summary: str
     key_insights: list[str]
     feedback_for_agents: dict[str, str]  # agent_id -> personalized feedback

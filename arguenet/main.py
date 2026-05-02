@@ -20,7 +20,6 @@ except ModuleNotFoundError:  # pragma: no cover
     from arguenet.debate.round import run_round, score_round, run_scorer
     from arguenet.debate.termination import should_terminate
 
-
 async def main(question: str) -> dict:
     
     max_rounds = int(os.getenv("ARGUENET_MAX_ROUNDS", str(MAX_ROUNDS)))
@@ -34,7 +33,9 @@ async def main(question: str) -> dict:
     current_feedback: dict[str, str] = {}  # Feedback from previous round
     
     for round_num in range(1, max_rounds + 1):
-        print(f"\n=== Round {round_num} ===")
+        print(f"\n{'='*80}")
+        print(f"ROUND {round_num}")
+        print(f"{'='*80}")
         
         # Run the debate round (with feedback from previous round if available)
         print("Running arguments...")
@@ -47,9 +48,28 @@ async def main(question: str) -> dict:
         print("Scoring completed")
         
         # Run the scorer agent to generate feedback
-        print("Running scorer agent...")
+        print("Running fact-checking and ranking evaluation...")
         round_score = await run_scorer(round_num, question, agents["scorer"], current, scores, [a for round_args in history for a in round_args])
         print(f"Scorer results: Winner = {round_score.winner}, Summary = {round_score.summary}")
+        
+        # Print rankings
+        print(f"\n{'='*80}")
+        print(f"RANKINGS - ROUND {round_num}")
+        print(f"{'='*80}")
+        
+        # Sort agents by score (descending)
+        sorted_scores = sorted(round_score.all_scores.items(), key=lambda x: x[1], reverse=True)
+        
+        for rank, (agent_id, score) in enumerate(sorted_scores, 1):
+            status = "🏆 WINNER" if rank == 1 else ""
+            print(f"{rank}. {agent_id:20} - Score: {score:6.2f}/100 {status}")
+            
+            # Print fact-checks if available
+            if agent_id in round_score.fact_checks:
+                print(f"   Fact-Check: {round_score.fact_checks[agent_id]}")
+        
+        print(f"\nRound Summary: {round_score.summary}")
+        print(f"Key Insights: {', '.join(round_score.key_insights)}")
         
         # Extract feedback for next round
         current_feedback = round_score.feedback_for_agents
@@ -61,12 +81,40 @@ async def main(question: str) -> dict:
         # Check termination
         done, reason = should_terminate(round_num, history, current)
         if done:
-            print(f"Debate terminated: {reason}")
+            print(f"\n{'='*80}")
+            print(f"DEBATE TERMINATED: {reason}")
+            print(f"{'='*80}\n")
             break
     
     # Build final consensus with all round scores
     consensus = build_consensus(current, all_scores, reason)
     consensus["round_scores"] = [rs.model_dump() for rs in all_round_scores]
+    
+    # Print final cumulative rankings
+    print(f"\n{'='*80}")
+    print("FINAL CUMULATIVE RANKINGS (All Rounds)")
+    print(f"{'='*80}")
+    
+    # Calculate cumulative scores
+    cumulative_scores: dict[str, float] = {}
+    for round_score in all_round_scores:
+        for agent_id, score in round_score.all_scores.items():
+            if agent_id not in cumulative_scores:
+                cumulative_scores[agent_id] = 0.0
+            cumulative_scores[agent_id] += score
+    
+    # Calculate averages
+    num_rounds = len(all_round_scores)
+    if num_rounds > 0:
+        avg_scores = {agent: total / num_rounds for agent, total in cumulative_scores.items()}
+        sorted_avg = sorted(avg_scores.items(), key=lambda x: x[1], reverse=True)
+        
+        for rank, (agent_id, avg_score) in enumerate(sorted_avg, 1):
+            total_score = cumulative_scores[agent_id]
+            status = "🏆 OVERALL WINNER" if rank == 1 else ""
+            print(f"{rank}. {agent_id:20} - Avg Score: {avg_score:6.2f}/100, Total: {total_score:7.2f} {status}")
+    
+    print(f"\n{'='*80}\n")
     return consensus
 
 
