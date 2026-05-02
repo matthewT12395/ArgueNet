@@ -67,7 +67,7 @@ The shared construction logic is in arguenet/agents/base.py.
 
 Important details:
   - AGENT_MODULES maps agent ids to their modules.
-  - build_agent() creates a ChatAnthropic model using ARGUENET_MODEL.
+  - build_agent() creates a ChatOpenAI model pointed at OpenRouter using ARGUENET_MODEL.
   - Each agent gets a system prompt and a tool list.
   - build_agents() returns the full runtime dictionary used by main.py.
 

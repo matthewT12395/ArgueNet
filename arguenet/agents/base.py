@@ -4,7 +4,7 @@ import importlib
 import os
 from typing import Any
 
-from langchain_anthropic import ChatAnthropic
+from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 try:
@@ -81,7 +81,16 @@ def _build_executor(llm: Any, tools: list[Any], system_prompt: str) -> Any:
 
 
 def build_agent(agent_id: str, system_prompt: str, source_types: list[str]) -> Any:
-    llm = ChatAnthropic(model=os.getenv("ARGUENET_MODEL", "claude-haiku-4-5-20251001"), temperature=AGENT_TEMPS[agent_id])
+    api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is required to run ArgueNet agents")
+
+    llm = ChatOpenAI(
+        model=os.getenv("ARGUENET_MODEL", "openai/gpt-4o-mini"),
+        temperature=AGENT_TEMPS[agent_id],
+        api_key=api_key,
+        base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+    )
     tools = build_tools(agent_id, source_types)
     return _build_executor(llm, tools, system_prompt)
 
