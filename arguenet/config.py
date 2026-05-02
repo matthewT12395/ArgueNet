@@ -28,12 +28,25 @@ class ModeratorScore(BaseModel):
     you_must_respond_to: list[str]
 
 
+class RoundScore(BaseModel):
+    round: int
+    winner: str
+    winner_score: float
+    all_scores: dict[str, float]  # agent_id -> score (0-100)
+    all_arguments: dict[str, str]  # agent_id -> their argument
+    fact_checks: dict[str, str] = {}  # agent_id -> fact-check summary
+    summary: str
+    key_insights: list[str]
+    feedback_for_agents: dict[str, str]  # agent_id -> personalized feedback
+
+
 AGENT_TEMPS = {
     "skeptic": 0.7,
     "advocate": 0.6,
     "devils_advocate": 1.0,
     "empiricist": 0.4,
     "moderator": 0.2,
+    "scorer": 0.3,
 }
 
 AGENT_SOURCE_TYPES = {
@@ -42,6 +55,7 @@ AGENT_SOURCE_TYPES = {
     "devils_advocate": ["reddit", "news"],
     "empiricist": ["news", "wiki", "scraper"],
     "moderator": [],
+    "scorer": [],
 }
 
 MAX_ROUNDS = 6

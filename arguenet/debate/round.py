@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio, json
 
 try:
-    from ..config import Argument, ModeratorScore
+    from ..config import Argument, ModeratorScore, RoundScore
     from ..tools.registry import RoundSourceRegistry, set_registry
 except ImportError:  # pragma: no cover
-    from config import Argument, ModeratorScore
+    from config import Argument, ModeratorScore, RoundScore
     from tools.registry import RoundSourceRegistry, set_registry
 
 
@@ -205,17 +205,21 @@ async def _invoke(agent, prompt: str, schema, *, retry_msg: str, agent_id: str, 
     )
 
 
-def _prompt(kind: str, question: str, round_num: int, history: list[Argument], scores: list[ModeratorScore], payload: list[Argument] | None = None) -> str:
-    return _dump({"kind": kind, "question": question, "round": round_num, "history": history, "scores": scores, "arguments": payload or []})
+def _prompt(kind: str, question: str, round_num: int, history: list[Argument], scores: list[ModeratorScore], payload: list[Argument] | None = None, feedback: dict[str, str] | None = None) -> str:
+    return _dump({"kind": kind, "question": question, "round": round_num, "history": history, "scores": scores, "arguments": payload or [], "feedback": feedback or {}})
 
 
-async def run_round(round_num: int, question: str, agents: dict[str, object], history: list[Argument], scores: list[ModeratorScore]) -> list[Argument]:
+async def run_round(round_num: int, question: str, agents: dict[str, object], history: list[Argument], scores: list[ModeratorScore], feedback: dict[str, str] | None = None) -> list[Argument]:
     set_registry(RoundSourceRegistry(round_num))
-    names = [n for n in agents if n != "moderator"]
+    names = [n for n in agents if n != "moderator" and n != "scorer"]
+    
+    # Use feedback if provided, otherwise empty dict
+    agent_feedback = feedback or {}
+    
     argue = await asyncio.gather(*[
         _invoke(
             agents[n],
-            _prompt("argue", question, round_num, history, scores),
+            _prompt("argue", question, round_num, history, scores, feedback=agent_feedback),
             Argument,
             retry_msg="Include at least one targets entry.",
             agent_id=n,
@@ -228,7 +232,7 @@ async def run_round(round_num: int, question: str, agents: dict[str, object], hi
     rebut = await asyncio.gather(*[
         _invoke(
             agents[n],
-            _prompt("rebut", question, round_num, history, scored, argue),
+            _prompt("rebut", question, round_num, history, scored, argue, feedback=agent_feedback),
             Argument,
             retry_msg="Include at least one targets entry.",
             agent_id=n,
@@ -272,3 +276,176 @@ async def score_round(round_num: int, question: str, moderator, arguments: list[
         )
         for arg in arguments
     ]
+
+
+def _normalize_round_score_payload(payload: dict, *, round_num: int, arguments: list[Argument], moderator_scores: list[ModeratorScore]) -> dict:
+    """Normalize scorer output to RoundScore schema."""
+    out = dict(payload)
+    out["round"] = int(out.get("round") or round_num)
+    
+    # Get all scores from scorer (should be 0-100)
+    all_scores = out.get("all_scores") or {}
+    if isinstance(all_scores, dict):
+        all_scores = {str(k): float(v) for k, v in all_scores.items()}
+    else:
+        # Fallback to moderator scores if not provided
+        all_scores = {s.agent_id: s.weighted_score for s in moderator_scores}
+    out["all_scores"] = all_scores
+    
+    # Determine winner from scores
+    winner = out.get("winner") or out.get("top_performer")
+    winner_score = 0.0
+    
+    # If winner not explicitly provided, determine from scores
+    if not winner:
+        if all_scores:
+            winner = max(all_scores, key=all_scores.get)
+            winner_score = all_scores[winner]
+    else:
+        winner = str(winner)
+        winner_score = all_scores.get(winner, 0.0)
+    
+    out["winner"] = winner
+    out["winner_score"] = float(out.get("winner_score") or winner_score)
+    
+    # Get all arguments
+    all_arguments = out.get("all_arguments") or {}
+    if isinstance(all_arguments, dict):
+        all_arguments = {str(k): str(v) for k, v in all_arguments.items()}
+    else:
+        all_arguments = {arg.agent_id: arg.argument for arg in arguments}
+    out["all_arguments"] = all_arguments
+    
+    # Get fact checks
+    fact_checks = out.get("fact_checks") or {}
+    if isinstance(fact_checks, dict):
+        out["fact_checks"] = {str(k): str(v) for k, v in fact_checks.items()}
+    else:
+        out["fact_checks"] = {}
+    
+    out["summary"] = str(out.get("summary") or "Round evaluation complete.")
+    
+    key_insights = out.get("key_insights", [])
+    if isinstance(key_insights, list):
+        out["key_insights"] = [str(x) for x in key_insights]
+    else:
+        out["key_insights"] = [str(key_insights)] if str(key_insights).strip() else []
+    
+    # Feedback for agents
+    feedback = out.get("feedback_for_agents") or {}
+    if isinstance(feedback, dict):
+        out["feedback_for_agents"] = {str(k): str(v) for k, v in feedback.items()}
+    else:
+        # Generate default feedback if not provided
+        out["feedback_for_agents"] = {arg.agent_id: "Continue improving." for arg in arguments}
+    
+    return out
+
+
+async def run_scorer(round_num: int, question: str, scorer_agent, arguments: list[Argument], moderator_scores: list[ModeratorScore], history: list[Argument]) -> RoundScore:
+    """Run the scorer agent to evaluate all participant agents with fact-checking."""
+    # Create a comprehensive scoring prompt with arguments and sources
+    arguments_summary = json.dumps([
+        {
+            "agent": arg.agent_id,
+            "argument": arg.argument,
+            "claims": arg.claims,
+            "sources": arg.sources,
+            "confidence": arg.confidence,
+        }
+        for arg in arguments
+    ], indent=2)
+    
+    scores_summary = json.dumps([
+        {
+            "agent": score.agent_id,
+            "relevance": score.relevance,
+            "evidence_quality": score.evidence_quality,
+            "novelty": score.novelty,
+            "rebuttal_force": score.rebuttal_force,
+            "weighted_score": score.weighted_score,
+        }
+        for score in moderator_scores
+    ], indent=2)
+    
+    scorer_prompt = f"""
+You are evaluating a debate round with RIGOROUS FACT-CHECKING.
+Question: {question}
+Round: {round_num}
+
+Current arguments from this round:
+{arguments_summary}
+
+Moderator quality scores for these arguments:
+{scores_summary}
+
+Your task is to:
+1. FACT-CHECK each agent's claims against their sources or your own knowledge
+2. Score each agent numerically (0-100) on:
+   - Factual Accuracy: How many facts are verifiable/true
+   - Evidence Quality: How well sources support claims
+   - Argument Strength: Logical coherence and persuasiveness
+   - Source Credibility: How reliable are the sources cited
+   - OVERALL SCORE = (Accuracy*0.3 + Evidence*0.25 + Strength*0.25 + Credibility*0.2)
+3. Identify the winner (highest overall score)
+4. Summarize key insights and any factual errors found
+5. Provide specific, actionable feedback for EACH agent for their NEXT contribution
+
+For each agent specifically note:
+- Factual errors or unsupported claims
+- Quality of evidence and sources
+- Argument coherence
+- Comparison to other agents
+- Specific improvements needed
+
+Return ONLY a JSON object matching this schema exactly:
+{{
+  "round": {round_num},
+  "winner": "agent_name_with_highest_score",
+  "winner_score": 0.0,
+  "all_scores": {{"agent_name": 75.5, "agent_name2": 68.3}},
+  "all_arguments": {{"agent_name": "their argument text"}},
+  "fact_checks": {{"agent_name": "factual accuracy summary and any errors"}},
+  "summary": "Overall summary of round with fact-checking results",
+  "key_insights": ["insight1", "insight2"],
+  "feedback_for_agents": {{"agent_name": "personalized feedback with fact-check results and improvement suggestions"}}
+}}
+"""
+    
+    schema_msg = (
+        "Return ONLY a JSON object with keys: "
+        "round, winner, winner_score, all_scores, all_arguments, fact_checks, summary, key_insights, feedback_for_agents. "
+        "Ensure all_scores contains numerical scores (0-100) for every agent."
+    )
+    
+    for _ in range(3):
+        try:
+            raw = await _ainvoke_agent(scorer_agent, scorer_prompt)
+            payload = _json_payload(_extract_text(raw))
+            
+            # Normalize the payload
+            normalized = _normalize_round_score_payload(
+                payload,
+                round_num=round_num,
+                arguments=arguments,
+                moderator_scores=moderator_scores,
+            )
+            
+            return RoundScore(**normalized)
+        except Exception as exc:
+            scorer_prompt += "\n" + schema_msg + f" Validation error: {exc}"
+    
+    # Fallback RoundScore
+    score_dict = {s.agent_id: s.weighted_score for s in moderator_scores}
+    winner = max(score_dict, key=score_dict.get) if score_dict else "unknown"
+    
+    return RoundScore(
+        round=round_num,
+        winner=winner,
+        winner_score=score_dict.get(winner, 0.0),
+        all_scores=score_dict,
+        all_arguments={arg.agent_id: arg.argument for arg in arguments},
+        summary="Fallback scoring generated after schema retries failed.",
+        key_insights=["Round completed successfully."],
+        feedback_for_agents={arg.agent_id: "Continue building on your arguments." for arg in arguments},
+    )
