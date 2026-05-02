@@ -1,0 +1,55 @@
+flowchart TD
+    User(["User / CLI\narguenet/main.py"])
+    FE["React Frontend\nfrontend/src/"]
+    ORC["FastAPI Orchestrator\norchestrator/app.py"]
+
+    subgraph Debate Engine ["Debate Engine  (arguenet/)"]
+        direction TB
+        CFG["config.py\ntemps · rounds · thresholds"]
+
+        subgraph Agents ["agents/"]
+            ADV["Advocate\nnews · wiki"]
+            SKP["Skeptic\nreddit · news"]
+            DA["Devil's Advocate\nreddit · news"]
+            EMP["Empiricist\nnews · wiki · scraper"]
+            MOD["Moderator\n(scorer, no tools)"]
+        end
+
+        subgraph DebateLoop ["debate/"]
+            RND["round.py\narg pass → score → rebuttal"]
+            TERM["termination.py\nconvergence · stalemate · quorum · cap"]
+            CON["consensus.py\nbuild final answer"]
+        end
+
+        subgraph Tools ["tools/"]
+            NEWS["search.py\nTavily news"]
+            RED["reddit.py\npublic JSON"]
+            WKI["wiki.py\nWikipedia"]
+            SCR["scraper.py\narticle extract"]
+            REG["registry.py\nsource dedup"]
+        end
+    end
+
+    FE -->|"POST /debate"| ORC
+    User -->|question| Debate Engine
+
+    CFG --> Agents
+    ADV & SKP & DA & EMP --> RND
+    RND -->|scores| MOD
+    MOD -->|scores back| RND
+    RND --> TERM
+    TERM -->|"continue"| RND
+    TERM -->|"stop"| CON
+
+    ADV --> NEWS & WKI
+    SKP --> RED & NEWS
+    DA  --> RED & NEWS
+    EMP --> NEWS & WKI & SCR
+    NEWS & RED & WKI & SCR --> REG
+
+    CON -->|"JSON answer"| User
+
+    style Debate Engine fill:#1e1e2e,stroke:#89b4fa,color:#cdd6f4
+    style Agents fill:#181825,stroke:#a6e3a1,color:#cdd6f4
+    style DebateLoop fill:#181825,stroke:#f38ba8,color:#cdd6f4
+    style Tools fill:#181825,stroke:#fab387,color:#cdd6f4

@@ -1,5 +1,5 @@
 langchain
-langchain-anthropic
+langchain-openai
 langchain-core
 tavily-python
 trafilatura
