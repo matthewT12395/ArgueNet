@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 
 from confluent_kafka import Consumer, KafkaError, KafkaException
 
+from .dlq import DeadLetterQueue
 from .schema import MessageEnvelope
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 
 
 class ArgueNetConsumer:
@@ -26,9 +30,12 @@ class ArgueNetConsumer:
         self,
         topics: list[str],
         group_id: str,
-        bootstrap_servers: str = "localhost:9092",
+        bootstrap_servers: str = _DEFAULT_BOOTSTRAP,
         auto_offset_reset: str = "latest",
+        enable_dlq: bool = True,
     ) -> None:
+        self._bootstrap_servers = bootstrap_servers
+        self._topics = topics
         self._consumer = Consumer({
             "bootstrap.servers": bootstrap_servers,
             "group.id": group_id,
@@ -39,6 +46,7 @@ class ArgueNetConsumer:
             "group.protocol": "classic",
         })
         self._consumer.subscribe(topics)
+        self._dlq = DeadLetterQueue(bootstrap_servers) if enable_dlq else None
 
     def poll(
         self,
@@ -70,12 +78,21 @@ class ArgueNetConsumer:
                 if debate_id is None or envelope.debate_id == debate_id:
                     messages.append(envelope)
             except Exception as exc:
-                logger.warning("Skipping malformed Kafka record: %s", exc)
+                logger.warning("Malformed Kafka record: %s — routing to DLQ", exc)
+                if self._dlq is not None:
+                    self._dlq.send(
+                        raw_value=msg.value(),
+                        reason=str(exc),
+                        source_topic=msg.topic(),
+                        debate_id=debate_id,
+                    )
 
         return messages
 
     def close(self) -> None:
         self._consumer.close()
+        if self._dlq is not None:
+            self._dlq.close()
 
     def __enter__(self) -> ArgueNetConsumer:
         return self
