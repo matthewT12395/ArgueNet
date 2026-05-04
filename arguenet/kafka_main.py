@@ -47,9 +47,9 @@ load_dotenv()
 
 try:
     from .agents.base import build_agents
-    from .config import Argument, MAX_ROUNDS, ModeratorScore
+    from .config import Argument, MAX_ROUNDS, ModeratorScore, RoundScore
     from .debate.consensus import build_consensus
-    from .debate.round import _invoke, _prompt, score_round
+    from .debate.round import _invoke, _prompt, run_scorer, score_round
     from .debate.termination import should_terminate
     from .messaging.consumer import ArgueNetConsumer
     from .messaging.producer import ArgueNetProducer
@@ -59,9 +59,9 @@ try:
     from .tools.registry import RoundSourceRegistry, set_registry
 except ImportError:
     from arguenet.agents.base import build_agents
-    from arguenet.config import Argument, MAX_ROUNDS, ModeratorScore
+    from arguenet.config import Argument, MAX_ROUNDS, ModeratorScore, RoundScore
     from arguenet.debate.consensus import build_consensus
-    from arguenet.debate.round import _invoke, _prompt, score_round
+    from arguenet.debate.round import _invoke, _prompt, run_scorer, score_round
     from arguenet.debate.termination import should_terminate
     from arguenet.messaging.consumer import ArgueNetConsumer
     from arguenet.messaging.producer import ArgueNetProducer
@@ -221,6 +221,7 @@ async def _run_argue_phase(
     agents: dict,
     history: list[Argument],
     scores: list[ModeratorScore],
+    feedback: dict[str, str] | None = None,
     producer: ArgueNetProducer,
     result_consumer: ArgueNetConsumer,
     loop: asyncio.AbstractEventLoop,
@@ -229,7 +230,7 @@ async def _run_argue_phase(
     Phase 1: coordinate initial arguments from all debate agents.
 
     Flow:
-      coordinator → control(argue) → [agents consume & respond] → arguments topic
+      coordinator → control(argue) → [agents invoke LLMs directly] → arguments topic (fan-out)
     """
     set_registry(RoundSourceRegistry(round_num))
     names = agents_for_phase("argue")
@@ -251,8 +252,8 @@ async def _run_argue_phase(
     await loop.run_in_executor(None, lambda: producer.send(CONTROL_TOPIC, ctrl_envelope))
     logger.info("debate=%s round=%d  coordinator → argue phase", debate_id, round_num)
 
-    # All debate agents produce arguments concurrently
-    prompt = _prompt("argue", question, round_num, history, scores)
+    # All debate agents produce arguments concurrently; inject scorer feedback if available
+    prompt = _prompt("argue", question, round_num, history, scores, feedback=feedback)
     results: list[Argument] = await asyncio.gather(*[
         _run_debate_agent(
             agent_id=n,
@@ -267,8 +268,8 @@ async def _run_argue_phase(
         for n in names
     ])
 
-    # Coordinator collects from Kafka (confirms delivery; payload already in `results`)
-    await _collect_from_kafka(result_consumer, debate_id, round_num, names, loop)
+    # Fan-out: confirm Kafka delivery in background — debate flow does not block on this
+    asyncio.create_task(_collect_from_kafka(result_consumer, debate_id, round_num, names, loop))
 
     return results
 
@@ -318,7 +319,8 @@ async def _run_score_phase(
         loop=loop,
     )
 
-    await _collect_from_kafka(result_consumer, debate_id, round_num, ["moderator"], loop)
+    # Fan-out: confirm Kafka delivery in background
+    asyncio.create_task(_collect_from_kafka(result_consumer, debate_id, round_num, ["moderator"], loop))
 
     return scores
 
@@ -332,6 +334,7 @@ async def _run_rebut_phase(
     prior_arguments: list[Argument],
     scores: list[ModeratorScore],
     history: list[Argument],
+    feedback: dict[str, str] | None = None,
     producer: ArgueNetProducer,
     result_consumer: ArgueNetConsumer,
     loop: asyncio.AbstractEventLoop,
@@ -340,7 +343,7 @@ async def _run_rebut_phase(
     Phase 3: debate agents rebut based on moderator feedback.
 
     Flow:
-      coordinator → control(rebut) → [agents rebut] → arguments topic
+      coordinator → control(rebut) → [agents invoke LLMs directly] → arguments topic (fan-out)
     """
     names = agents_for_phase("rebut")
 
@@ -360,7 +363,8 @@ async def _run_rebut_phase(
     await loop.run_in_executor(None, lambda: producer.send(CONTROL_TOPIC, ctrl_envelope))
     logger.info("debate=%s round=%d  coordinator → rebut phase", debate_id, round_num)
 
-    prompt = _prompt("rebut", question, round_num, history, scores, prior_arguments)
+    # Inject scorer feedback so agents can incorporate prior-round critique
+    prompt = _prompt("rebut", question, round_num, history, scores, prior_arguments, feedback=feedback)
     results: list[Argument] = await asyncio.gather(*[
         _run_debate_agent(
             agent_id=n,
@@ -375,9 +379,58 @@ async def _run_rebut_phase(
         for n in names
     ])
 
-    await _collect_from_kafka(result_consumer, debate_id, round_num, names, loop)
+    # Fan-out: confirm Kafka delivery in background
+    asyncio.create_task(_collect_from_kafka(result_consumer, debate_id, round_num, names, loop))
 
     return results
+
+
+async def _run_scorer_phase(
+    *,
+    debate_id: str,
+    round_num: int,
+    question: str,
+    agents: dict,
+    arguments: list[Argument],
+    moderator_scores: list[ModeratorScore],
+    history: list[Argument],
+    producer: ArgueNetProducer,
+    loop: asyncio.AbstractEventLoop,
+) -> RoundScore:
+    """
+    Phase 4: scorer agent fact-checks and ranks all agents; publishes summary to Kafka.
+
+    Flow:
+      scorer invokes LLM → evaluation envelope per agent → evaluations topic (fan-out)
+    """
+    round_score: RoundScore = await run_scorer(
+        round_num, question, agents["scorer"], arguments, moderator_scores, history
+    )
+
+    # Publish one evaluation envelope per agent to evaluations topic (non-blocking fan-out)
+    for agent_id, score in round_score.all_scores.items():
+        envelope = _make_envelope(
+            debate_id=debate_id,
+            round_number=round_num,
+            message_type="evaluation",
+            sender_id="scorer",
+            target_ids=[agent_id],
+            payload={
+                "agent_id": agent_id,
+                "score": score,
+                "fact_check": round_score.fact_checks.get(agent_id, ""),
+                "feedback": round_score.feedback_for_agents.get(agent_id, ""),
+                "winner": round_score.winner,
+                "summary": round_score.summary,
+            },
+        )
+        await loop.run_in_executor(None, lambda e=envelope: producer.send(EVALUATIONS_TOPIC, e))
+
+    logger.info(
+        "debate=%s round=%d  scorer published %d evaluation(s), winner=%s",
+        debate_id, round_num, len(round_score.all_scores), round_score.winner,
+    )
+    return round_score
 
 
 # ── top-level runner ──────────────────────────────────────────────────────────
@@ -418,6 +471,7 @@ class KafkaDebateRunner:
 
             history: list[list[Argument]] = []
             all_scores: list[ModeratorScore] = []
+            current_feedback: dict[str, str] = {}
             reason = "round_cap"
 
             for round_num in range(1, max_rounds + 1):
@@ -434,6 +488,7 @@ class KafkaDebateRunner:
                     agents=agents,
                     history=flat_history,
                     scores=all_scores,
+                    feedback=current_feedback,
                     producer=producer,
                     result_consumer=result_consumer,
                     loop=loop,
@@ -461,6 +516,7 @@ class KafkaDebateRunner:
                     prior_arguments=arguments,
                     scores=mid_scores,
                     history=flat_history,
+                    feedback=current_feedback,
                     producer=producer,
                     result_consumer=result_consumer,
                     loop=loop,
@@ -478,6 +534,20 @@ class KafkaDebateRunner:
                     result_consumer=result_consumer,
                     loop=loop,
                 )
+
+                # ── scorer: fact-check, rank, and generate next-round feedback ─
+                round_score = await _run_scorer_phase(
+                    debate_id=debate_id,
+                    round_num=round_num,
+                    question=question,
+                    agents=agents,
+                    arguments=rebuttals,
+                    moderator_scores=final_scores,
+                    history=flat_history,
+                    producer=producer,
+                    loop=loop,
+                )
+                current_feedback = round_score.feedback_for_agents
 
                 history.append(rebuttals)
                 all_scores = final_scores
