@@ -26,6 +26,74 @@ The debate entry point is [arguenet/main.py](arguenet/main.py).
 
 ---
 
+## Web UI (orchestrator + React frontend)
+
+The demo UI talks to a **FastAPI orchestrator** that runs the same pipeline as `python -m arguenet.main` (in-process). **Kafka is not required** for this path.
+
+### Install dependencies
+
+From the repository root:
+
+```bash
+python -m pip install -r requirements.txt
+python -m pip install -r orchestrator/requirements.txt
+cd frontend && npm install && cd ..
+```
+
+### Environment variables
+
+Configure the same keys your team uses for the CLI (see **Setup** above). `arguenet` loads a `.env` file in the project root when present.
+
+Optional tuning:
+
+| Variable | Purpose |
+|----------|---------|
+| `ARGUENET_MAX_ROUNDS` | Default max rounds if the UI does not override (the UI can send `max_rounds` per request). |
+
+On **Windows (PowerShell)** you can set variables for the current session:
+
+```powershell
+$env:OPENROUTER_API_KEY = "..."
+$env:TAVILY_API_KEY = "..."
+```
+
+### Run everything (two terminals)
+
+**Terminal 1 — orchestrator** (from repo root):
+
+```bash
+uvicorn orchestrator.app:app --reload --host 127.0.0.1 --port 8000
+```
+
+**Terminal 2 — frontend**:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Open **http://localhost:5173** in the browser. The Vite dev server proxies `/debate`, `/debates`, and `/health` to `http://127.0.0.1:8000`.
+
+If the API runs on another host or port, set `VITE_API_BASE` (e.g. `VITE_API_BASE=http://127.0.0.1:8000`) when building or running the frontend.
+
+### Demo login
+
+The login screen is **frontend-only** for now: use **any password**. Leave the username blank to get a random guest name. Session is stored in `sessionStorage` for the tab.
+
+### Orchestrator HTTP API (summary)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/health` | Liveness |
+| `POST` | `/debate` | Run a full debate (blocking JSON response) |
+| `POST` | `/debate/stream` | NDJSON stream: stdout-style **live rounds** log, then final `result` |
+| `GET` | `/debates` | List saved debates (in-memory for this process) |
+| `GET` | `/debate/{debate_id}` | Fetch one debate |
+
+Restarting the orchestrator clears in-memory stored debates. The frontend also ships **mock “past runs”** (labeled **Demo**) so the nav is usable before you accumulate real runs.
+
+---
+
 ## Kafka Messaging Layer
 
 The Kafka layer replaces direct Python function calls between agents with
