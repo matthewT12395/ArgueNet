@@ -1,0 +1,39 @@
+%%{init: {"theme": "base"}}%%
+flowchart TD
+
+    USER["User\nSubmits a question"]
+
+    FE["Frontend\nReact UI"]
+
+    ORCH["Orchestrator\nFastAPI"]
+
+    subgraph DEBATE["Debate Pipeline  (repeats N rounds)"]
+        AGENTS["Debate Agents\nAdvocate · Skeptic · Devils Advocate · Empiricist"]
+        KAFKA["Kafka\nMessages logged to topics"]
+        MOD["Moderator\nScores each argument"]
+        SCORER["Scorer\nRanks agents · generates feedback"]
+    end
+
+    RESULT["Consensus Answer\nFinal answer · confidence score"]
+
+    GRAFANA["Grafana\nMonitor Kafka metrics & logs"]
+
+    USER --> FE --> ORCH --> AGENTS
+    AGENTS -->|"publish arguments (fan-out)"| KAFKA
+    AGENTS --> MOD --> SCORER
+    SCORER -->|"feedback for next round"| AGENTS
+    SCORER --> RESULT --> ORCH --> FE
+
+    KAFKA --> GRAFANA
+
+    classDef user    fill:#fff9db,stroke:#c9a227,color:#000
+    classDef agent   fill:#dde8ff,stroke:#6989d6,color:#000
+    classDef kafka   fill:#d4edda,stroke:#5a9e6f,color:#000
+    classDef mod     fill:#fde8d8,stroke:#d4845a,color:#000
+    classDef obs     fill:#f3f0ff,stroke:#8b6fd4,color:#000
+
+    class USER,FE,ORCH,RESULT user
+    class AGENTS agent
+    class KAFKA kafka
+    class MOD,SCORER mod
+    class GRAFANA obs
