@@ -93,21 +93,41 @@ The login screen is **frontend-only** for now: use **any password**. Leave the u
 Restarting the orchestrator clears in-memory stored debates. The frontend also ships **mock “past runs”** (labeled **Demo**) so the nav is usable before you accumulate real runs.
 
 ### Deploy backend to Render (free tier)
-#random test
-This repo includes a ready-to-use Render blueprint at `render.yaml` for the FastAPI orchestrator.
+
+This repo includes a ready-to-use Render blueprint at `render.yaml` that creates two services:
+- `arguenet-orchestrator` — FastAPI backend
+- `arguenet-loki-bridge` — background worker that forwards Kafka messages to Grafana Cloud Loki
 
 1. Push this repo to GitHub.
 2. In Render: **New +** → **Blueprint** → select this repo.
-3. Render will detect `render.yaml` and create `arguenet-orchestrator`.
-4. In Render service settings, add required secret env vars:
-   - `OPENROUTER_API_KEY`
-   - `TAVILY_API_KEY`
-   - `REDDIT_CLIENT_ID`
-   - `REDDIT_CLIENT_SECRET`
-   - `REDDIT_USER_AGENT`
-   - (optional) `ARGUENET_MAX_ROUNDS`
-5. Deploy and verify:
+3. Render will detect `render.yaml` and create both services automatically.
+4. In Render → `arguenet-orchestrator` → **Environment**, add:
+
+   | Variable | Value |
+   |----------|-------|
+   | `OPENROUTER_API_KEY` | your OpenRouter key |
+   | `TAVILY_API_KEY` | your Tavily key |
+   | `REDDIT_CLIENT_ID` | your Reddit client ID |
+   | `REDDIT_CLIENT_SECRET` | your Reddit client secret |
+   | `REDDIT_USER_AGENT` | `arguenet` |
+   | `KAFKA_BOOTSTRAP_SERVERS` | `pkc-rgm37.us-west-2.aws.confluent.cloud:9092` |
+   | `KAFKA_SASL_KEY` | Confluent Cloud cluster API key |
+   | `KAFKA_SASL_SECRET` | Confluent Cloud cluster API secret |
+
+5. In Render → `arguenet-loki-bridge` → **Environment**, add:
+
+   | Variable | Value |
+   |----------|-------|
+   | `KAFKA_BOOTSTRAP_SERVERS` | `pkc-rgm37.us-west-2.aws.confluent.cloud:9092` |
+   | `KAFKA_SASL_KEY` | Confluent Cloud cluster API key |
+   | `KAFKA_SASL_SECRET` | Confluent Cloud cluster API secret |
+   | `GRAFANA_LOKI_URL` | `https://logs-prod-021.grafana.net` |
+   | `GRAFANA_LOKI_USER` | Grafana Cloud Loki user ID |
+   | `GRAFANA_API_TOKEN` | Grafana Cloud Access Policy token (with `logs:write` scope) |
+
+6. Deploy and verify:
    - `https://<your-render-service>.onrender.com/health` returns `{"status":"ok",...}`
+   - Render logs for `arguenet-loki-bridge` show `Kafka→Loki bridge started`
 
 Then point your Vercel frontend at Render:
 
@@ -123,6 +143,12 @@ async message passing over three Kafka topics. Each agent publishes its
 output to Kafka and the coordinator collects responses before advancing
 to the next phase.
 
+### Kafka broker
+
+**Production (Render / cloud):** [Confluent Cloud](https://confluent.cloud) — fully managed, no local Kafka needed. Topics are auto-created by the orchestrator on startup with `replication_factor=3`.
+
+**Local development:** Kafka via Homebrew (see Prerequisites below). Topics must be created manually.
+
 ### Topics
 
 | Topic | Direction | Purpose |
@@ -130,6 +156,7 @@ to the next phase.
 | `arguenet.debate.control` | coordinator → agents | Phase signals (argue, score, rebut, terminate) |
 | `arguenet.debate.arguments` | debate agents → coordinator | Arguments and counterarguments |
 | `arguenet.debate.evaluations` | moderator → coordinator | Moderator scores per agent |
+| `arguenet.debate.dlq` | any → DLQ | Malformed or failed messages |
 
 ### Round lifecycle
 
@@ -168,40 +195,45 @@ depending on `message_type`.
 
 ### Prerequisites
 
-**Kafka 4.x via Homebrew (Mac):**
+**Option A — Confluent Cloud (recommended for production and Render):**
+
+1. Create a free cluster at [confluent.cloud](https://confluent.cloud)
+2. Generate a cluster API key (Kafka → API Keys)
+3. Set env vars — topics are auto-created by the orchestrator on first run:
+
+```bash
+export KAFKA_BOOTSTRAP_SERVERS="<your-cluster>.confluent.cloud:9092"
+export KAFKA_SASL_KEY="<api-key>"
+export KAFKA_SASL_SECRET="<api-secret>"
+```
+
+**Option B — Local Kafka via Homebrew (Mac, dev only):**
 
 ```bash
 brew install kafka
 brew services start kafka
 ```
 
-**Create the three topics** (one-time setup):
+Create topics manually (one-time):
 
 ```bash
 kafka-topics --bootstrap-server localhost:9092 \
-  --create --topic arguenet.debate.control \
-  --partitions 1 --replication-factor 1
-
+  --create --topic arguenet.debate.control --partitions 1 --replication-factor 1
 kafka-topics --bootstrap-server localhost:9092 \
-  --create --topic arguenet.debate.arguments \
-  --partitions 1 --replication-factor 1
-
+  --create --topic arguenet.debate.arguments --partitions 1 --replication-factor 1
 kafka-topics --bootstrap-server localhost:9092 \
-  --create --topic arguenet.debate.evaluations \
-  --partitions 1 --replication-factor 1
-
-# Confirm
-kafka-topics --bootstrap-server localhost:9092 --list
+  --create --topic arguenet.debate.evaluations --partitions 1 --replication-factor 1
+kafka-topics --bootstrap-server localhost:9092 \
+  --create --topic arguenet.debate.dlq --partitions 1 --replication-factor 1
 ```
 
 ### Run (Kafka mode)
 
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
 export TAVILY_API_KEY="tvly-..."
-export KAFKA_BOOTSTRAP_SERVERS="localhost:9092"
-export ARGUENET_MODEL="claude-haiku-4-5-20251001"   # cheaper model for testing
-export ARGUENET_MAX_ROUNDS="2"                       # fewer rounds = faster + cheaper
+export KAFKA_BOOTSTRAP_SERVERS="localhost:9092"   # or Confluent Cloud URL
+export ARGUENET_MODEL="openai/gpt-4o-mini"
+export ARGUENET_MAX_ROUNDS="2"                    # fewer rounds = faster + cheaper
 
 python -m arguenet.kafka_main "Should remote work be default for software teams?"
 ```
@@ -261,6 +293,41 @@ kafka-console-consumer --bootstrap-server localhost:9092 \
 kafka-console-consumer --bootstrap-server localhost:9092 \
   --topic arguenet.debate.control --from-beginning
 ```
+
+### Grafana Cloud monitoring
+
+ArgueNet ships a monitoring stack that pushes Kafka message logs to **Grafana Cloud Loki** and Kafka broker metrics via the **Confluent Cloud integration**.
+
+| Component | What it does |
+|-----------|-------------|
+| `monitoring/kafka_loki_bridge.py` | Reads every Kafka message and pushes it to Grafana Cloud Loki with labels: `app`, `topic`, `agent`, `message_type`, `debate_id`, `trace_id` |
+| Confluent Cloud → Grafana integration | Managed scrape job — no local Prometheus needed |
+
+**Useful Loki queries in Grafana Explore:**
+
+```
+# All debate messages
+{app="arguenet"}
+
+# Filter by message type
+{app="arguenet", message_type="argument"}
+{app="arguenet", message_type="evaluation"}
+
+# Trace a single debate end-to-end
+{app="arguenet", trace_id="<first-8-chars-of-trace-id>"}
+
+# Filter by agent
+{app="arguenet", agent="advocate"}
+```
+
+**Run the bridge locally:**
+
+```bash
+set -a && source monitoring/grafana_cloud.env && set +a
+bash monitoring/start_monitoring.sh
+```
+
+On Render, the `arguenet-loki-bridge` worker runs automatically — no local bridge needed.
 
 ### Messaging layer files
 
