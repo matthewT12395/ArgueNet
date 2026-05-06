@@ -1,0 +1,45 @@
+services:
+  - type: web
+    name: arguenet-orchestrator
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt && pip install -r orchestrator/requirements.txt
+    startCommand: uvicorn orchestrator.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: OPENROUTER_BASE_URL
+        value: https://openrouter.ai/api/v1
+      - key: ARGUENET_MODEL
+        value: openai/gpt-4o-mini
+      - key: KAFKA_BOOTSTRAP_SERVERS
+        sync: false
+      - key: KAFKA_SASL_KEY
+        sync: false
+      - key: KAFKA_SASL_SECRET
+        sync: false
+
+  - type: worker
+    name: arguenet-loki-bridge
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: python monitoring/kafka_loki_bridge.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: KAFKA_BOOTSTRAP_SERVERS
+        sync: false
+      - key: KAFKA_SASL_KEY
+        sync: false
+      - key: KAFKA_SASL_SECRET
+        sync: false
+      - key: GRAFANA_LOKI_URL
+        sync: false
+      - key: GRAFANA_LOKI_USER
+        sync: false
+      - key: GRAFANA_API_TOKEN
+        sync: false
