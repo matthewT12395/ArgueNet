@@ -32,11 +32,22 @@ try:
 except ImportError:
     pass
 
-from arguenet.main import main as run_arguenet_main
+from arguenet.main import main as _run_main
+try:
+    from arguenet.kafka_main import main as _run_kafka_main  # type: ignore
+except Exception:  # pragma: no cover - kafka deps optional
+    _run_kafka_main = None  # type: ignore
 try:
     from arguenet.messaging.health import ensure_topics  # type: ignore
 except Exception:  # pragma: no cover - kafka deps optional
     ensure_topics = None  # type: ignore
+
+
+def _debate_runner():
+    """Return kafka_main.main when ARGUENET_USE_KAFKA=1, else arguenet.main.main."""
+    if os.getenv("ARGUENET_USE_KAFKA", "0") == "1" and _run_kafka_main is not None:
+        return _run_kafka_main
+    return _run_main
 
 
 @contextlib.asynccontextmanager
@@ -174,7 +185,7 @@ def _run_debate_with_stdout_tee(
     try:
         with _max_rounds_env(max_rounds):
             outcome["result"] = asyncio.run(
-                run_arguenet_main(
+                _debate_runner()(
                     question,
                     personal_agent_profile=personal_agent_profile,
                     personal_agent_profiles=personal_agent_profiles,
@@ -431,7 +442,7 @@ def execute_debate(
     try:
         with _max_rounds_env(max_rounds):
             pipeline_result = asyncio.run(
-                run_arguenet_main(
+                _debate_runner()(
                     question,
                     personal_agent_profile=personal_agent_profile,
                     personal_agent_profiles=personal_agent_profiles,

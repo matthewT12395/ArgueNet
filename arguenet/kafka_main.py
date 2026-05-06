@@ -482,6 +482,7 @@ class KafkaDebateRunner:
         personal_agent_profile: dict[str, str] | None = None,
         personal_agent_profiles: list[dict[str, str]] | None = None,
         selected_example_agents: list[str] | None = None,
+        on_round: "callable | None" = None,
     ) -> dict:
         debate_id = str(uuid.uuid4())
         trace_id = str(uuid.uuid4())   # one trace_id per debate — flows through every envelope
@@ -627,6 +628,12 @@ class KafkaDebateRunner:
                 if round_score.key_insights:
                     print(f"Key Insights: {', '.join(round_score.key_insights)}")
 
+                if on_round is not None:
+                    try:
+                        on_round(round_score.model_dump())
+                    except Exception as cb_exc:
+                        print(f"[on_round callback error] {cb_exc}")
+
                 history.append(rebuttals)
                 all_scores = final_scores
 
@@ -664,6 +671,7 @@ async def main(
     personal_agent_profile: dict[str, str] | None = None,
     personal_agent_profiles: list[dict[str, str]] | None = None,
     selected_example_agents: list[str] | None = None,
+    on_round: "callable | None" = None,
 ) -> dict:
     runner = KafkaDebateRunner(bootstrap_servers=bootstrap_servers)
     return await runner.run(
@@ -671,6 +679,7 @@ async def main(
         personal_agent_profile=personal_agent_profile,
         personal_agent_profiles=personal_agent_profiles,
         selected_example_agents=selected_example_agents,
+        on_round=on_round,
     )
 
 
