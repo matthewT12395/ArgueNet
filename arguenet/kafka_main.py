@@ -453,6 +453,8 @@ class KafkaDebateRunner:
         agents = build_agents()
         loop = asyncio.get_event_loop()
 
+        print(f"max rounds {max_rounds}")
+
         # Unique consumer group IDs so coordinator gets all messages independently
         # of any external consumers that may be running.
         coord_group = f"coordinator-{debate_id}"
@@ -476,11 +478,15 @@ class KafkaDebateRunner:
 
             for round_num in range(1, max_rounds + 1):
                 logger.info("━━━ debate=%s  round %d / %d ━━━", debate_id, round_num, max_rounds)
+                print(f"\n{'='*80}")
+                print(f"ROUND {round_num}")
+                print(f"{'='*80}")
 
                 # Flatten history (list of rounds) into a single list for prompts
                 flat_history = [a for round_args in history for a in round_args]
 
                 # ── argue ────────────────────────────────────────────────────
+                print("Running arguments...")
                 arguments = await _run_argue_phase(
                     debate_id=debate_id,
                     round_num=round_num,
@@ -493,8 +499,10 @@ class KafkaDebateRunner:
                     result_consumer=result_consumer,
                     loop=loop,
                 )
+                print("Arguments completed")
 
                 # ── score (intermediate) ──────────────────────────────────────
+                print("Scoring arguments...")
                 mid_scores = await _run_score_phase(
                     debate_id=debate_id,
                     round_num=round_num,
@@ -508,6 +516,7 @@ class KafkaDebateRunner:
                 )
 
                 # ── rebut ─────────────────────────────────────────────────────
+                print("Running rebuttals...")
                 rebuttals = await _run_rebut_phase(
                     debate_id=debate_id,
                     round_num=round_num,
@@ -521,8 +530,10 @@ class KafkaDebateRunner:
                     result_consumer=result_consumer,
                     loop=loop,
                 )
+                print("Rebuttals completed")
 
                 # ── final score ───────────────────────────────────────────────
+                print("Scoring arguments...")
                 final_scores = await _run_score_phase(
                     debate_id=debate_id,
                     round_num=round_num,
@@ -534,8 +545,10 @@ class KafkaDebateRunner:
                     result_consumer=result_consumer,
                     loop=loop,
                 )
+                print("Scoring completed")
 
                 # ── scorer: fact-check, rank, and generate next-round feedback ─
+                print("Running fact-checking and ranking evaluation...")
                 round_score = await _run_scorer_phase(
                     debate_id=debate_id,
                     round_num=round_num,
@@ -547,7 +560,22 @@ class KafkaDebateRunner:
                     producer=producer,
                     loop=loop,
                 )
+                print(f"Scorer results: Winner = {round_score.winner}, Summary = {round_score.summary}")
                 current_feedback = round_score.feedback_for_agents
+
+                # Print rankings matching main.py output format
+                print(f"\n{'='*80}")
+                print(f"RANKINGS - ROUND {round_num}")
+                print(f"{'='*80}")
+                sorted_scores = sorted(round_score.all_scores.items(), key=lambda x: x[1], reverse=True)
+                for rank, (agent_id, score) in enumerate(sorted_scores, 1):
+                    status = "WINNER" if rank == 1 else ""
+                    print(f"{rank}. {agent_id:20} - Score: {score:6.2f}/100 {status}")
+                    if agent_id in round_score.fact_checks:
+                        print(f"   Fact-Check: {round_score.fact_checks[agent_id]}")
+                print(f"\nRound Summary: {round_score.summary}")
+                if round_score.key_insights:
+                    print(f"Key Insights: {', '.join(round_score.key_insights)}")
 
                 history.append(rebuttals)
                 all_scores = final_scores
@@ -555,6 +583,7 @@ class KafkaDebateRunner:
                 done, reason = should_terminate(round_num, history, rebuttals)
                 if done:
                     logger.info("debate=%s  terminating after round %d: %s", debate_id, round_num, reason)
+                    print(f"\nTerminating after round {round_num}: {reason}")
                     # Signal terminate to any external consumers
                     term_envelope = _make_envelope(
                         debate_id=debate_id,
