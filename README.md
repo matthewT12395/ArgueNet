@@ -345,3 +345,5 @@ arguenet/kafka_main.py   # Kafka-driven debate runner
 > **Note:** The Kafka layer requires `confluent-kafka` (listed in `requirements.txt`).
 > `confluent-kafka` 2.x requires `"group.protocol": "classic"` when connecting to
 > Kafka 4.x, which is already configured in `arguenet/messaging/consumer.py`.
+
+
