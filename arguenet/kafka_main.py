@@ -460,17 +460,21 @@ async def _run_scorer_phase(
 
 # ── top-level runner ──────────────────────────────────────────────────────────
 
+def _default_bootstrap() -> str:
+    return os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+
+
 class KafkaDebateRunner:
     """
     Orchestrates a full ArgueNet debate over Kafka.
 
     Usage:
-        runner = KafkaDebateRunner(bootstrap_servers="localhost:9092")
+        runner = KafkaDebateRunner()
         result = await runner.run("Should remote work be default for software teams?")
     """
 
-    def __init__(self, bootstrap_servers: str = "localhost:9092") -> None:
-        self.bootstrap_servers = bootstrap_servers
+    def __init__(self, bootstrap_servers: str | None = None) -> None:
+        self.bootstrap_servers = bootstrap_servers or _default_bootstrap()
 
     async def run(
         self,
@@ -656,7 +660,7 @@ class KafkaDebateRunner:
 
 async def main(
     question: str,
-    bootstrap_servers: str = "localhost:9092",
+    bootstrap_servers: str | None = None,
     personal_agent_profile: dict[str, str] | None = None,
     personal_agent_profiles: list[dict[str, str]] | None = None,
     selected_example_agents: list[str] | None = None,

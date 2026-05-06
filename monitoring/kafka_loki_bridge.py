@@ -27,11 +27,14 @@ import requests
 from confluent_kafka import Consumer, KafkaError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from arguenet.messaging.kafka_config import build_kafka_config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-LOKI_URL        = os.getenv("LOKI_URL", "http://localhost:3100")
+LOKI_URL        = os.getenv("GRAFANA_LOKI_URL", os.getenv("LOKI_URL", "http://localhost:3100"))
+LOKI_USER       = os.getenv("GRAFANA_LOKI_USER", "")
+LOKI_TOKEN      = os.getenv("GRAFANA_API_TOKEN", "")
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 TOPICS          = [
     "arguenet.debate.arguments",
@@ -47,19 +50,20 @@ def _now_ns() -> str:
 
 
 def _push_to_loki(labels: dict[str, str], message: str) -> bool:
-    """Push a single log line to Loki via the push API."""
+    """Push a single log line to Loki (local or Grafana Cloud)."""
     payload = {
         "streams": [{
             "stream": labels,
             "values": [[_now_ns(), message]],
         }]
     }
+    kwargs: dict = {"json": payload, "timeout": 5}
+    if LOKI_USER and LOKI_TOKEN:
+        kwargs["auth"] = (LOKI_USER, LOKI_TOKEN)
     try:
-        r = requests.post(
-            f"{LOKI_URL}/loki/api/v1/push",
-            json=payload,
-            timeout=5,
-        )
+        r = requests.post(f"{LOKI_URL}/loki/api/v1/push", **kwargs)
+        if r.status_code != 204:
+            logger.warning("Loki push returned %d: %s", r.status_code, r.text[:200])
         return r.status_code == 204
     except Exception as exc:
         logger.warning("Loki push failed: %s", exc)
@@ -110,14 +114,16 @@ def _format_log_line(topic: str, envelope: dict) -> str:
 
 
 def run_bridge():
-    group_id = f"loki-bridge-{uuid.uuid4()}"
-    consumer = Consumer({
-        "bootstrap.servers": KAFKA_BOOTSTRAP,
-        "group.id": group_id,
-        "auto.offset.reset": "latest",
-        "enable.auto.commit": True,
-        "group.protocol": "classic",
-    })
+    group_id = f"arguenet-loki-bridge-{uuid.uuid4()}"
+    consumer = Consumer(build_kafka_config(
+        KAFKA_BOOTSTRAP,
+        **{
+            "group.id": group_id,
+            "auto.offset.reset": "latest",
+            "enable.auto.commit": True,
+            "group.protocol": "classic",
+        },
+    ))
     consumer.subscribe(TOPICS)
 
     logger.info("ArgueNet Kafka→Loki bridge started")
@@ -158,6 +164,8 @@ def run_bridge():
                 }
 
                 log_line = _format_log_line(topic, envelope)
+                logger.info("received topic=%-12s agent=%-18s %s",
+                            labels["topic"], sender, log_line[:80])
                 ok = _push_to_loki(labels, log_line)
 
                 if ok:

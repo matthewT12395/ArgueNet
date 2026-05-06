@@ -22,9 +22,36 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from arguenet.kafka_main import main as run_arguenet_main
+# Load Kafka + Grafana Cloud credentials from env file if present (local dev / Render).
+# On Render the env vars are set via dashboard; load_dotenv is a no-op in that case.
+try:
+    from dotenv import load_dotenv
+    _env_file = ROOT_DIR / "monitoring" / "grafana_cloud.env"
+    if _env_file.exists():
+        load_dotenv(_env_file, override=False)  # override=False: dashboard vars win
+except ImportError:
+    pass
 
-app = FastAPI(title="ArgueNet Orchestrator", version="0.2.0")
+from arguenet.kafka_main import main as run_arguenet_main
+from arguenet.messaging.health import ensure_topics
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(app_: FastAPI):
+    """Ensure all Kafka topics exist before accepting requests."""
+    try:
+        # Confluent Cloud requires replication_factor=3; local Kafka uses 1.
+        bs = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+        rf = 3 if ".confluent.cloud" in bs else 1
+        status = ensure_topics(replication_factor=rf)
+        for topic, state in status.items():
+            print(f"[kafka] {topic}: {state}")
+    except Exception as exc:
+        print(f"[kafka] topic setup warning: {exc}")
+    yield
+
+
+app = FastAPI(title="ArgueNet Orchestrator", version="0.2.0", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,

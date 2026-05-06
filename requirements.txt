@@ -8,3 +8,4 @@ wikipedia
 pydantic
 python-dotenv
 confluent-kafka
+requests

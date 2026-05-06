@@ -136,7 +136,7 @@ def main():
     print(f"  Total   : ~{total_msgs} messages across 3 topics")
     print(f"\nWatch Grafana at http://localhost:3000 while this runs...\n")
 
-    with ArgueNetProducer("localhost:9092") as producer:
+    with ArgueNetProducer(os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")) as producer:
         start = time.monotonic()
         for i in range(args.debates):
             debate_id = str(uuid.uuid4())

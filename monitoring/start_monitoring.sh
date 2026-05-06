@@ -1,23 +1,30 @@
 #!/usr/bin/env bash
 set -e
 
-echo "Starting ArgueNet monitoring stack..."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# kafka_exporter
-if pgrep -x kafka_exporter > /dev/null; then
-  echo "kafka_exporter already running"
+# Load Grafana Cloud + Confluent Cloud credentials
+if [ -f "$SCRIPT_DIR/grafana_cloud.env" ]; then
+  set -a
+  source "$SCRIPT_DIR/grafana_cloud.env"
+  set +a
+  echo "Credentials loaded"
 else
-  nohup kafka_exporter --kafka.server=localhost:9092 > /tmp/kafka_exporter.log 2>&1 &
-  echo "kafka_exporter started (PID $!)"
+  echo "WARNING: grafana_cloud.env not found — Loki push will not work"
 fi
 
-# Prometheus
-brew services start prometheus 2>/dev/null || true
-echo "Prometheus running at http://localhost:9090"
+echo "Starting ArgueNet monitoring stack..."
 
-# Grafana
-brew services start grafana 2>/dev/null || true
-echo "Grafana running at http://localhost:3000  (admin / admin)"
+# Kafka → Loki bridge (reads from Confluent Cloud, pushes logs to Grafana Cloud Loki)
+if pgrep -f "kafka_loki_bridge" > /dev/null; then
+  pkill -f "kafka_loki_bridge" 2>/dev/null || true
+  sleep 1
+fi
+cd "$(dirname "$SCRIPT_DIR")"
+PYTHONUNBUFFERED=1 nohup .venv/bin/python monitoring/kafka_loki_bridge.py > /tmp/loki_bridge.log 2>&1 &
+echo "Kafka→Loki bridge started (PID $!)"
 
 echo ""
-echo "Next: open http://localhost:3000 and import dashboard ID 7589"
+echo "Metrics : Confluent Cloud → Grafana Cloud (managed scrape job)"
+echo "Logs    : Confluent Cloud → Loki bridge → ${GRAFANA_LOKI_URL:-not set}"
+echo "Dashboard: https://ashavinodhinivijayan.grafana.net"

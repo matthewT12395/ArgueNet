@@ -6,12 +6,10 @@ import os
 
 from confluent_kafka import Producer, KafkaException
 
+from .kafka_config import build_kafka_config
 from .schema import MessageEnvelope
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-
 
 def _delivery_report(err, msg) -> None:
     """Callback fired by confluent-kafka after each produce attempt."""
@@ -38,13 +36,15 @@ class ArgueNetProducer:
     the same partition and arrive in order within that debate.
     """
 
-    def __init__(self, bootstrap_servers: str = _DEFAULT_BOOTSTRAP) -> None:
-        self._producer = Producer({
-            "bootstrap.servers": bootstrap_servers,
-            "acks": "all",
-            "retries": 3,
-            "retry.backoff.ms": 200,
-        })
+    def __init__(self, bootstrap_servers: str | None = None) -> None:
+        if bootstrap_servers is None:
+            bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+        self._producer = Producer(build_kafka_config(
+            bootstrap_servers,
+            acks="all",
+            retries=3,
+            **{"retry.backoff.ms": 200},
+        ))
 
     def send(self, topic: str, message: MessageEnvelope) -> None:
         """Publish message and flush until the broker acknowledges."""

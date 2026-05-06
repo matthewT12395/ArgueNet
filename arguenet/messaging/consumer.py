@@ -7,12 +7,10 @@ import os
 from confluent_kafka import Consumer, KafkaError, KafkaException
 
 from .dlq import DeadLetterQueue
+from .kafka_config import build_kafka_config
 from .schema import MessageEnvelope
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-
 
 class ArgueNetConsumer:
     """
@@ -30,21 +28,25 @@ class ArgueNetConsumer:
         self,
         topics: list[str],
         group_id: str,
-        bootstrap_servers: str = _DEFAULT_BOOTSTRAP,
+        bootstrap_servers: str | None = None,
         auto_offset_reset: str = "latest",
         enable_dlq: bool = True,
     ) -> None:
+        if bootstrap_servers is None:
+            bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
         self._bootstrap_servers = bootstrap_servers
         self._topics = topics
-        self._consumer = Consumer({
-            "bootstrap.servers": bootstrap_servers,
-            "group.id": group_id,
-            "auto.offset.reset": auto_offset_reset,
-            "enable.auto.commit": True,
-            # Kafka 4.x defaults to the new KIP-848 consumer group protocol;
-            # confluent-kafka 2.x only supports the classic protocol.
-            "group.protocol": "classic",
-        })
+        self._consumer = Consumer(build_kafka_config(
+            bootstrap_servers,
+            **{
+                "group.id": group_id,
+                "auto.offset.reset": auto_offset_reset,
+                "enable.auto.commit": True,
+                # Kafka 4.x defaults to the new KIP-848 consumer group protocol;
+                # confluent-kafka 2.x only supports the classic protocol.
+                "group.protocol": "classic",
+            },
+        ))
         self._consumer.subscribe(topics)
         self._dlq = DeadLetterQueue(bootstrap_servers) if enable_dlq else None
 
