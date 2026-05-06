@@ -22,7 +22,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from arguenet.main import main as run_arguenet_main
+from arguenet.kafka_main import main as run_arguenet_main
 
 app = FastAPI(title="ArgueNet Orchestrator", version="0.2.0")
 
@@ -110,15 +110,28 @@ def _run_debate_with_stdout_tee(
     question: str, log_q: queue.SimpleQueue, outcome: dict, max_rounds: Optional[int]
 ) -> None:
     """Runs asyncio.run(main) in a worker thread while teeing stdout to log_q."""
+    import logging as _logging
+
     old_out = sys.stdout
     tee = _StdoutLineTee(old_out, log_q)
     sys.stdout = tee  # type: ignore[assignment]
+
+    # Attach a handler so warnings/errors from kafka_main reach the tee;
+    # INFO-level coordination noise is filtered out — only print() output shows.
+    stream_handler = _logging.StreamHandler(tee)  # type: ignore[arg-type]
+    stream_handler.setFormatter(_logging.Formatter("%(message)s"))
+    stream_handler.setLevel(_logging.WARNING)
+    arguenet_logger = _logging.getLogger("arguenet")
+    arguenet_logger.addHandler(stream_handler)
+    arguenet_logger.setLevel(_logging.INFO)
+
     try:
         with _max_rounds_env(max_rounds):
             outcome["result"] = asyncio.run(run_arguenet_main(question))
     except Exception as exc:
         outcome["error"] = exc
     finally:
+        arguenet_logger.removeHandler(stream_handler)
         sys.stdout = old_out
         pending = tee.drain_pending()
         if pending:
