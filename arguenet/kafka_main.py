@@ -37,7 +37,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import os
 import time
 import uuid
@@ -75,53 +74,6 @@ logger = logging.getLogger(__name__)
 
 _COLLECT_TIMEOUT_S = 180   # max seconds to wait for all agent responses per phase
 _KAFKA_POLL_MS = 300
-
-# ── Fault tolerance constants ─────────────────────────────────────────────────
-_AGENT_MAX_RETRIES = 3          # max LLM call attempts per agent per phase
-_AGENT_RETRY_BASE_S = 1.0       # exponential backoff base (1 → 2 → 4 seconds)
-_CIRCUIT_OPEN_THRESHOLD = 3     # consecutive failures before circuit opens
-_CIRCUIT_RECOVERY_ROUNDS = 2    # rounds to wait before trying a tripped agent again
-_QUORUM_RATIO = 0.75            # fraction of active agents required to proceed
-
-
-class AgentCircuitBreaker:
-    """
-    Tracks per-agent consecutive failures.  When an agent exceeds
-    _CIRCUIT_OPEN_THRESHOLD failures the circuit opens and the agent is
-    skipped for _CIRCUIT_RECOVERY_ROUNDS rounds before being retried.
-    """
-
-    def __init__(self) -> None:
-        self._failures: dict[str, int] = {}
-        self._open: dict[str, int] = {}   # agent_id → round it tripped on
-
-    def is_open(self, agent_id: str, current_round: int) -> bool:
-        if agent_id not in self._open:
-            return False
-        tripped_at = self._open[agent_id]
-        if current_round - tripped_at >= _CIRCUIT_RECOVERY_ROUNDS:
-            # Half-open: let one attempt through
-            return False
-        return True
-
-    def record_success(self, agent_id: str) -> None:
-        self._failures.pop(agent_id, None)
-        self._open.pop(agent_id, None)
-
-    def record_failure(self, agent_id: str, current_round: int) -> None:
-        self._failures[agent_id] = self._failures.get(agent_id, 0) + 1
-        if self._failures[agent_id] >= _CIRCUIT_OPEN_THRESHOLD:
-            if agent_id not in self._open:
-                self._open[agent_id] = current_round
-                print(f"[CIRCUIT BREAKER] {agent_id} tripped — skipping for {_CIRCUIT_RECOVERY_ROUNDS} round(s)")
-                logger.warning("Circuit breaker OPEN for %s at round %d", agent_id, current_round)
-
-    def active_agents(self, agent_ids: list[str], current_round: int) -> list[str]:
-        active = [a for a in agent_ids if not self.is_open(a, current_round)]
-        skipped = [a for a in agent_ids if self.is_open(a, current_round)]
-        if skipped:
-            print(f"[CIRCUIT BREAKER] Skipping agents: {skipped}")
-        return active
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -196,40 +148,17 @@ async def _run_debate_agent(
     debate_id: str,
     producer: ArgueNetProducer,
     loop: asyncio.AbstractEventLoop,
-    circuit_breaker: "AgentCircuitBreaker",
-) -> Argument | None:
-    """
-    Invoke one debate agent LLM with exponential-backoff retries.
-    Returns None if all retries are exhausted (caller skips this agent).
-    Reports outcomes to the circuit breaker.
-    """
-    last_exc: Exception | None = None
-    for attempt in range(1, _AGENT_MAX_RETRIES + 1):
-        try:
-            result: Argument = await _invoke(
-                agent,
-                prompt,
-                Argument,
-                retry_msg="Include at least one targets entry.",
-                agent_id=agent_id,
-                round_num=round_num,
-                default_target=f"shared.round{round_num}.claim1",
-            )
-            circuit_breaker.record_success(agent_id)
-            break
-        except Exception as exc:
-            last_exc = exc
-            wait = _AGENT_RETRY_BASE_S * (2 ** (attempt - 1))
-            print(f"[RETRY] {agent_id} attempt {attempt}/{_AGENT_MAX_RETRIES} failed — retrying in {wait:.0f}s")
-            logger.warning("Agent %s attempt %d failed: %s", agent_id, attempt, exc)
-            if attempt < _AGENT_MAX_RETRIES:
-                await asyncio.sleep(wait)
-    else:
-        # All retries exhausted
-        circuit_breaker.record_failure(agent_id, round_num)
-        print(f"[FAULT] {agent_id} failed after {_AGENT_MAX_RETRIES} attempts — excluded from this round")
-        logger.error("Agent %s exhausted retries: %s", agent_id, last_exc)
-        return None
+) -> Argument:
+    """Invoke one debate agent LLM, publish the result to Kafka, and return it."""
+    result: Argument = await _invoke(
+        agent,
+        prompt,
+        Argument,
+        retry_msg="Include at least one targets entry.",
+        agent_id=agent_id,
+        round_num=round_num,
+        default_target=f"shared.round{round_num}.claim1",
+    )
 
     msg_type = message_type_for_phase(phase)  # "argument" or "counterargument"
     envelope = _make_envelope(
@@ -296,19 +225,15 @@ async def _run_argue_phase(
     producer: ArgueNetProducer,
     result_consumer: ArgueNetConsumer,
     loop: asyncio.AbstractEventLoop,
-    circuit_breaker: AgentCircuitBreaker,
 ) -> list[Argument]:
     """
     Phase 1: coordinate initial arguments from all debate agents.
 
     Flow:
       coordinator → control(argue) → [agents invoke LLMs directly] → arguments topic (fan-out)
-    Fault tolerance: circuit-tripped agents are skipped; quorum (≥75%) required to proceed.
     """
     set_registry(RoundSourceRegistry(round_num))
-    all_names = agents_for_phase("argue")
-    names = circuit_breaker.active_agents(all_names, round_num)
-    quorum = max(1, math.ceil(len(all_names) * _QUORUM_RATIO))
+    names = agents_for_phase("argue")
 
     # Broadcast phase-start signal to control topic
     control_payload = ControlPayload(
@@ -327,9 +252,9 @@ async def _run_argue_phase(
     await loop.run_in_executor(None, lambda: producer.send(CONTROL_TOPIC, ctrl_envelope))
     logger.info("debate=%s round=%d  coordinator → argue phase", debate_id, round_num)
 
-    # All active agents produce arguments concurrently; inject scorer feedback if available
+    # All debate agents produce arguments concurrently; inject scorer feedback if available
     prompt = _prompt("argue", question, round_num, history, scores, feedback=feedback)
-    raw_results: list[Argument | None] = await asyncio.gather(*[
+    results: list[Argument] = await asyncio.gather(*[
         _run_debate_agent(
             agent_id=n,
             agent=agents[n],
@@ -339,16 +264,9 @@ async def _run_argue_phase(
             debate_id=debate_id,
             producer=producer,
             loop=loop,
-            circuit_breaker=circuit_breaker,
         )
         for n in names
     ])
-    results = [r for r in raw_results if r is not None]
-
-    if len(results) < quorum:
-        print(f"[QUORUM FAILURE] Argue phase: only {len(results)}/{len(all_names)} agents responded (need {quorum}) — aborting round")
-        raise RuntimeError(f"Quorum not met in argue phase: {len(results)}/{len(all_names)}")
-    print(f"[QUORUM] Argue phase passed: {len(results)}/{len(all_names)} agents responded")
 
     # Fan-out: confirm Kafka delivery in background — debate flow does not block on this
     asyncio.create_task(_collect_from_kafka(result_consumer, debate_id, round_num, names, loop))
@@ -420,18 +338,14 @@ async def _run_rebut_phase(
     producer: ArgueNetProducer,
     result_consumer: ArgueNetConsumer,
     loop: asyncio.AbstractEventLoop,
-    circuit_breaker: AgentCircuitBreaker,
 ) -> list[Argument]:
     """
     Phase 3: debate agents rebut based on moderator feedback.
 
     Flow:
       coordinator → control(rebut) → [agents invoke LLMs directly] → arguments topic (fan-out)
-    Fault tolerance: circuit-tripped agents are skipped; quorum (≥75%) required to proceed.
     """
-    all_names = agents_for_phase("rebut")
-    names = circuit_breaker.active_agents(all_names, round_num)
-    quorum = max(1, math.ceil(len(all_names) * _QUORUM_RATIO))
+    names = agents_for_phase("rebut")
 
     control_payload = ControlPayload(
         phase="rebut",
@@ -451,7 +365,7 @@ async def _run_rebut_phase(
 
     # Inject scorer feedback so agents can incorporate prior-round critique
     prompt = _prompt("rebut", question, round_num, history, scores, prior_arguments, feedback=feedback)
-    raw_results: list[Argument | None] = await asyncio.gather(*[
+    results: list[Argument] = await asyncio.gather(*[
         _run_debate_agent(
             agent_id=n,
             agent=agents[n],
@@ -461,16 +375,9 @@ async def _run_rebut_phase(
             debate_id=debate_id,
             producer=producer,
             loop=loop,
-            circuit_breaker=circuit_breaker,
         )
         for n in names
     ])
-    results = [r for r in raw_results if r is not None]
-
-    if len(results) < quorum:
-        print(f"[QUORUM FAILURE] Rebut phase: only {len(results)}/{len(all_names)} agents responded (need {quorum}) — aborting round")
-        raise RuntimeError(f"Quorum not met in rebut phase: {len(results)}/{len(all_names)}")
-    print(f"[QUORUM] Rebut phase passed: {len(results)}/{len(all_names)} agents responded")
 
     # Fan-out: confirm Kafka delivery in background
     asyncio.create_task(_collect_from_kafka(result_consumer, debate_id, round_num, names, loop))
@@ -545,7 +452,6 @@ class KafkaDebateRunner:
         max_rounds = int(os.getenv("ARGUENET_MAX_ROUNDS", str(MAX_ROUNDS)))
         agents = build_agents()
         loop = asyncio.get_event_loop()
-        circuit_breaker = AgentCircuitBreaker()
 
         print(f"max rounds {max_rounds}")
 
@@ -592,7 +498,6 @@ class KafkaDebateRunner:
                     producer=producer,
                     result_consumer=result_consumer,
                     loop=loop,
-                    circuit_breaker=circuit_breaker,
                 )
                 print("Arguments completed")
 
@@ -624,7 +529,6 @@ class KafkaDebateRunner:
                     producer=producer,
                     result_consumer=result_consumer,
                     loop=loop,
-                    circuit_breaker=circuit_breaker,
                 )
                 print("Rebuttals completed")
 
