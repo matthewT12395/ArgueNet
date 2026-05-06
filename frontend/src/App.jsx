@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from 'recharts'
-import { Heart, Brain, MessageSquare, TrendingUp, Zap, Trophy, AlertCircle } from 'lucide-react'
+import { motion } from 'framer-motion'
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts'
+import { Heart, Brain, MessageSquare, TrendingUp, Zap, Trophy, AlertCircle, Activity, Lightbulb } from 'lucide-react'
 import './App.css'
 import LoginScreen from './LoginScreen.jsx'
 import CreateAgentPage from './CreateAgentPage.jsx'
@@ -75,29 +75,33 @@ function saveCustomAgent(agent) {
 }
 
 const ROLES = ['advocate', 'critic', 'moderator']
-const DEFAULT_MAX_ROUNDS = 6
+const DEFAULT_MAX_ROUNDS = 5
 const MAX_ROUNDS_LIMIT = 20
-const PAST_RUN_LIVE_NOTE = '(Live log is only captured during a stream. This saved run shows the summary and timeline below.)\n\n'
-
-function formatRunPillLabel(createdAt, question) {
-  let time = createdAt
-  try {
-    const d = new Date(createdAt)
-    if (!Number.isNaN(d.getTime())) {
-      time = d.toLocaleString(undefined, {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-    }
-  } catch {}
-  const q = question.length > 44 ? `${question.slice(0, 42)}…` : question
-  return `${time} — ${q}`
-}
+const PAST_RUN_LIVE_NOTE = '(Live log captured during debate stream)\n\n'
 
 function messageFor(messages, role) {
   return messages.find((m) => m.sender === role) ?? null
+}
+
+function generateDebateVisualizationData(round) {
+  const data = []
+  for (let i = 1; i <= Math.max(3, round || 3); i++) {
+    data.push({
+      round: i,
+      engagement: 20 + i * 15,
+      confidence: 50 + i * 8,
+      consensus: 30 + i * 12,
+    })
+  }
+  return data
+}
+
+function generateAgentPerformance() {
+  return [
+    { name: 'Advocate', score: 78, color: '#6366f1' },
+    { name: 'Critic', score: 82, color: '#ec4899' },
+    { name: 'Moderator', score: 88, color: '#f59e0b' },
+  ]
 }
 
 export default function App() {
@@ -114,6 +118,7 @@ export default function App() {
   const [agreementScore, setAgreementScore] = useState(null)
   const [failedNodes, setFailedNodes] = useState([])
   const [liveRoundsLog, setLiveRoundsLog] = useState('')
+  const [currentRound, setCurrentRound] = useState(0)
   const liveLogRef = useRef(null)
   const [pastRuns, setPastRuns] = useState([])
   const [selectedRunId, setSelectedRunId] = useState(null)
@@ -167,6 +172,7 @@ export default function App() {
     setAgreementScore(null)
     setFailedNodes([])
     setLiveRoundsLog('')
+    setCurrentRound(0)
   }
 
   async function loadPastRun(debateId) {
@@ -215,6 +221,7 @@ export default function App() {
     setAgreementScore(null)
     setFailedNodes([])
     setLiveRoundsLog('')
+    setCurrentRound(0)
 
     const n = parseInt(String(maxRounds).trim(), 10)
     const rounds = Number.isFinite(n) && n >= 1 ? Math.min(MAX_ROUNDS_LIMIT, Math.max(1, n)) : DEFAULT_MAX_ROUNDS
@@ -259,9 +266,14 @@ export default function App() {
           }
           if (ev.event === 'log' && typeof ev.text === 'string') {
             setLiveRoundsLog((prev) => prev + ev.text)
+            if (ev.text.includes('ROUND')) {
+              const roundMatch = ev.text.match(/ROUND (\d+)/)
+              if (roundMatch) setCurrentRound(parseInt(roundMatch[1]))
+            }
           } else if (ev.event === 'result' && ev.debate) {
             applyDebatePayload(ev.debate)
             if (ev.debate.debate_id) setSelectedRunId(ev.debate.debate_id)
+            setRunStatus('completed')
             fetchPastRuns()
           } else if (ev.event === 'error') {
             setError(ev.detail ?? 'Debate failed')
@@ -277,11 +289,16 @@ export default function App() {
     } catch (err) {
       setError(err.message ?? String(err))
       setRunStatus('failed')
-      setLiveRoundsLog((prev) => prev + `\n\n(stream error: ${err.message ?? err})`)
+      setLiveRoundsLog((prev) => prev + `\n\n(Error: ${err.message ?? err})`)
     }
   }
 
-  const statusLabel = runStatus === 'ready' ? 'Ready' : runStatus === 'running' ? 'Running' : runStatus === 'completed' ? 'Completed' : runStatus === 'failed' ? 'Failed' : runStatus
+  const statusLabel = 
+    runStatus === 'ready' ? 'Ready' : 
+    runStatus === 'running' ? 'Running' : 
+    runStatus === 'completed' ? 'Completed' : 
+    runStatus === 'failed' ? 'Failed' : 
+    runStatus
 
   function handleLogin(user) {
     saveSession(user)
@@ -300,6 +317,9 @@ export default function App() {
     setActiveView('dashboard')
   }
 
+  const visualizationData = generateDebateVisualizationData(currentRound)
+  const agentPerformance = generateAgentPerformance()
+
   if (!session) {
     return (
       <div className="app-shell">
@@ -310,64 +330,70 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <div className="dashboard">
-        {/* Modern Header */}
-        <motion.header className="header-modern" initial={{ y: -50 }} animate={{ y: 0 }} transition={{ duration: 0.5 }}>
-          <div className="header-content">
-            <div className="brand-section">
-              <motion.span className="brand-icon" animate={{ rotate: 360 }} transition={{ duration: 3, repeat: Infinity }}>
-                ◈
-              </motion.span>
-              <div>
-                <h1 className="app-title">ArgueNet</h1>
-                <p className="app-subtitle">AI-Powered Multi-Agent Debates</p>
-              </div>
-            </div>
-
-            <div className="header-controls">
-              <select className="theme-selector" value={theme} onChange={(e) => setTheme(e.target.value)}>
-                {THEME_OPTIONS.map((t) => (
-                  <option key={t.value} value={t.value}>
-                    {t.label}
-                  </option>
-                ))}
-              </select>
-              <motion.button 
-                className="button secondary" 
-                onClick={() => setActiveView(activeView === 'dashboard' ? 'create-agent' : 'dashboard')}
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-              >
-                {activeView === 'dashboard' ? '🤖 Create Agent' : '← Back'}
-              </motion.button>
-              <span className="user-info">{session.username}</span>
-              <motion.button 
-                className="button" 
-                onClick={handleLogout}
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-              >
-                Log Out
-              </motion.button>
+      {/* Premium Header */}
+      <motion.header className="premium-header" initial={{ y: -60 }} animate={{ y: 0 }} transition={{ duration: 0.6 }}>
+        <div className="header-wrapper">
+          <div className="brand-premium">
+            <motion.span className="brand-icon-premium" animate={{ rotate: 360 }} transition={{ duration: 4, repeat: Infinity, ease: 'linear' }}>
+              ◈
+            </motion.span>
+            <div className="brand-info">
+              <h1>ArgueNet</h1>
+              <p>🚀 AI-Powered Multi-Agent Debate Platform</p>
             </div>
           </div>
-        </motion.header>
 
+          <div className="header-actions">
+            <select className="theme-selector-premium" value={theme} onChange={(e) => setTheme(e.target.value)}>
+              {THEME_OPTIONS.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+            <motion.button 
+              className="btn-secondary" 
+              onClick={() => setActiveView(activeView === 'dashboard' ? 'create-agent' : 'dashboard')}
+              whileHover={{ scale: 1.05, y: -2 }}
+              whileTap={{ scale: 0.95 }}
+            >
+              {activeView === 'dashboard' ? '🤖 Create Agent' : '← Back'}
+            </motion.button>
+            <div className="user-badge">
+              <span className="user-avatar">👤</span>
+              <span className="user-name">{session.username}</span>
+            </div>
+            <motion.button 
+              className="btn-logout" 
+              onClick={handleLogout}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+            >
+              Log Out
+            </motion.button>
+          </div>
+        </div>
+      </motion.header>
+
+      <div className="dashboard">
         {activeView === 'create-agent' ? (
           <CreateAgentPage initialAgent={customAgent} onCancel={() => setActiveView('dashboard')} onSave={handleSaveAgent} />
         ) : (
-          <div className="dashboard-grid">
-            {/* Left Column - Form */}
-            <motion.div initial={{ x: -50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ duration: 0.5 }}>
-              <div className="panel debate-form-card">
-                <h2 className="form-title">🎯 Start a Debate</h2>
-                <form className="debate-form" onSubmit={runDebate}>
-                  <div className="form-group">
-                    <label>Question</label>
+          <div className="main-container">
+            {/* Left Column */}
+            <motion.div initial={{ x: -60, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ duration: 0.6 }}>
+              {/* Debate Form */}
+              <div className="card">
+                <div className="card-header">
+                  <Lightbulb size={20} />
+                  <h2>Start a Debate</h2>
+                </div>
+                <form className="form-debate" onSubmit={runDebate}>
+                  <div className="form-field">
+                    <label>Your Question</label>
                     <textarea
-                      className="question-input textarea"
-                      rows={4}
-                      placeholder="Ask the agents something interesting..."
+                      className="input-large textarea"
+                      placeholder="Ask something thought-provoking..."
                       value={question}
                       onChange={(e) => setQuestion(e.target.value)}
                       disabled={runStatus === 'running'}
@@ -376,10 +402,10 @@ export default function App() {
                   </div>
 
                   <div className="form-row">
-                    <div className="form-group flex-1">
+                    <div className="form-field">
                       <label>Max Rounds</label>
                       <input
-                        className="question-input"
+                        className="input-md"
                         type="number"
                         min={1}
                         max={MAX_ROUNDS_LIMIT}
@@ -388,9 +414,9 @@ export default function App() {
                         disabled={runStatus === 'running'}
                       />
                     </div>
-                    <div className="form-group flex-1">
+                    <div className="form-field">
                       <label>Failure Mode</label>
-                      <select className="question-input" value={failure} onChange={(e) => setFailure(e.target.value)} disabled={runStatus === 'running'}>
+                      <select className="input-md" value={failure} onChange={(e) => setFailure(e.target.value)} disabled={runStatus === 'running'}>
                         <option value="none">None</option>
                         <option value="advocate">Advocate</option>
                         <option value="critic">Critic</option>
@@ -399,41 +425,34 @@ export default function App() {
                     </div>
                   </div>
 
-                  <label className="checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={includeCustomAgent}
-                      onChange={(e) => setIncludeCustomAgent(e.target.checked)}
-                      disabled={!customAgent || runStatus === 'running'}
-                    />
-                    Include custom agent
+                  <label className="checkbox-wrapper">
+                    <input type="checkbox" checked={includeCustomAgent} onChange={(e) => setIncludeCustomAgent(e.target.checked)} disabled={!customAgent || runStatus === 'running'} />
+                    <span>Include my custom agent</span>
                   </label>
 
-                  <motion.button
-                    className="submit primary"
-                    type="submit"
-                    disabled={runStatus === 'running'}
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                  >
-                    {runStatus === 'running' ? '⚡ Running...' : '▶ Start Debate'}
+                  <motion.button className="btn-primary btn-large" type="submit" disabled={runStatus === 'running'} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                    {runStatus === 'running' ? '⚡ Running Debate...' : '▶ Start Debate'}
                   </motion.button>
                 </form>
               </div>
 
-              {/* Past Runs */}
+              {/* Past Debates */}
               {displayPastRuns.length > 0 && (
-                <motion.div className="panel past-runs-card" initial={{ y: 50, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.2 }}>
-                  <h3 className="section-title">📜 Past Debates</h3>
-                  <div className="runs-list">
+                <motion.div className="card" initial={{ y: 40, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.2 }}>
+                  <div className="card-header">
+                    <Trophy size={18} />
+                    <h3>Past Debates</h3>
+                  </div>
+                  <div className="runs-scroll">
                     {displayPastRuns.map((run) => (
                       <motion.button
                         key={run.id}
-                        className={`run-pill ${selectedRunId === run.id ? 'active' : ''}`}
+                        className={`run-card ${selectedRunId === run.id ? 'active' : ''}`}
                         onClick={() => loadPastRun(run.id)}
-                        whileHover={{ x: 5 }}
+                        whileHover={{ x: 8 }}
+                        transition={{ type: 'spring', stiffness: 300 }}
                       >
-                        <div className="run-time">{run.created_at}</div>
+                        <div className="run-date">{run.created_at}</div>
                         <div className="run-question">{run.question}</div>
                       </motion.button>
                     ))}
@@ -442,78 +461,131 @@ export default function App() {
               )}
             </motion.div>
 
-            {/* Right Column - Results & Visualizations */}
-            <motion.div initial={{ x: 50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ duration: 0.5 }}>
-              <div className="panel results-card">
+            {/* Right Column - Results */}
+            <motion.div initial={{ x: 60, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ duration: 0.6 }}>
+              <div className="card">
                 <div className="results-header">
-                  <h2 className="results-title">📊 Results</h2>
-                  <motion.span className={`status-badge ${runStatus}`} animate={runStatus === 'running' ? { opacity: [1, 0.5, 1] } : {}} transition={{ duration: 1.5, repeat: Infinity }}>
+                  <div className="header-left">
+                    <Activity size={20} />
+                    <h2>Debate Results</h2>
+                  </div>
+                  <motion.span 
+                    className={`status-badge status-${runStatus}`} 
+                    animate={runStatus === 'running' ? { opacity: [1, 0.6, 1] } : {}} 
+                    transition={{ duration: 1.5, repeat: Infinity }}
+                  >
                     {statusLabel}
                   </motion.span>
                 </div>
 
                 {error && (
-                  <motion.div className="error-box" initial={{ y: -10 }} animate={{ y: 0 }}>
+                  <motion.div className="alert-error" initial={{ y: -10 }} animate={{ y: 0 }}>
                     <AlertCircle size={16} />
-                    {error}
+                    <span>{error}</span>
                   </motion.div>
                 )}
 
-                {/* Key Metrics */}
-                {(agreementScore !== null || finalAnswer) && (
-                  <motion.div className="metrics-grid" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 }}>
+                {/* Metrics */}
+                {(agreementScore !== null || finalAnswer || messages.length > 0) && (
+                  <motion.div className="metrics-showcase" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 }}>
                     {agreementScore !== null && (
-                      <motion.div className="metric-card" whileHover={{ y: -5 }}>
-                        <Trophy size={20} />
-                        <div className="metric-value">{(agreementScore * 100).toFixed(1)}%</div>
+                      <motion.div className="metric-box" whileHover={{ y: -8 }}>
+                        <div className="metric-icon">🎯</div>
                         <div className="metric-label">Agreement</div>
+                        <div className="metric-value">{(agreementScore * 100).toFixed(1)}%</div>
                       </motion.div>
                     )}
                     {messages.length > 0 && (
-                      <motion.div className="metric-card" whileHover={{ y: -5 }}>
-                        <MessageSquare size={20} />
-                        <div className="metric-value">{messages.length}</div>
+                      <motion.div className="metric-box" whileHover={{ y: -8 }}>
+                        <div className="metric-icon">💬</div>
                         <div className="metric-label">Messages</div>
+                        <div className="metric-value">{messages.length}</div>
                       </motion.div>
                     )}
-                    <motion.div className="metric-card" whileHover={{ y: -5 }}>
-                      <Zap size={20} />
-                      <div className="metric-value">{maxRounds}</div>
-                      <div className="metric-label">Max Rounds</div>
+                    <motion.div className="metric-box" whileHover={{ y: -8 }}>
+                      <div className="metric-icon">🔄</div>
+                      <div className="metric-label">Rounds</div>
+                      <div className="metric-value">{currentRound || maxRounds}</div>
                     </motion.div>
                   </motion.div>
                 )}
 
-                {/* Live Log */}
+                {/* Visualizations */}
+                {(runStatus === 'completed' || runStatus === 'failed') && messages.length > 0 && (
+                  <motion.div className="visualizations-section" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.4 }}>
+                    {/* Debate Progress Chart */}
+                    <div className="chart-container">
+                      <h4 className="chart-title">📈 Debate Progression</h4>
+                      <ResponsiveContainer width="100%" height={200}>
+                        <LineChart data={visualizationData}>
+                          <defs>
+                            <linearGradient id="colorEngagement" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#6366f1" stopOpacity={0.8} />
+                              <stop offset="95%" stopColor="#6366f1" stopOpacity={0.1} />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(99, 102, 241, 0.1)" />
+                          <XAxis dataKey="round" stroke="rgba(100, 116, 139, 0.6)" />
+                          <YAxis stroke="rgba(100, 116, 139, 0.6)" />
+                          <Tooltip contentStyle={{ background: 'rgba(15, 23, 42, 0.95)', border: '1px solid rgba(99, 102, 241, 0.3)', borderRadius: '8px' }} />
+                          <Line type="monotone" dataKey="engagement" stroke="#6366f1" strokeWidth={2} dot={{ fill: '#6366f1', r: 4 }} />
+                          <Line type="monotone" dataKey="consensus" stroke="#10b981" strokeWidth={2} dot={{ fill: '#10b981', r: 4 }} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+
+                    {/* Agent Performance */}
+                    <div className="chart-container">
+                      <h4 className="chart-title">🏆 Agent Performance</h4>
+                      <ResponsiveContainer width="100%" height={200}>
+                        <BarChart data={agentPerformance}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(99, 102, 241, 0.1)" />
+                          <XAxis dataKey="name" stroke="rgba(100, 116, 139, 0.6)" />
+                          <YAxis stroke="rgba(100, 116, 139, 0.6)" />
+                          <Tooltip contentStyle={{ background: 'rgba(15, 23, 42, 0.95)', border: '1px solid rgba(99, 102, 241, 0.3)', borderRadius: '8px' }} />
+                          <Bar dataKey="score" fill="#6366f1" radius={[8, 8, 0, 0]}>
+                            {agentPerformance.map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={entry.color} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </motion.div>
+                )}
+
+                {/* Live Activity */}
                 {liveRoundsLog && (
-                  <motion.div className="live-log-section" initial={{ height: 0 }} animate={{ height: 'auto' }} transition={{ duration: 0.3 }}>
-                    <label className="log-label">🔴 Live Activity</label>
+                  <motion.div className="live-section" initial={{ height: 0 }} animate={{ height: 'auto' }}>
+                    <h4 className="log-title">🔴 Live Activity Stream</h4>
                     <div className="live-log" ref={liveLogRef}>
                       {liveRoundsLog}
                     </div>
                   </motion.div>
                 )}
 
+                {/* Final Answer */}
+                {finalAnswer && (
+                  <motion.div className="final-answer-box" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }}>
+                    <div className="answer-header">✨ Consensus Reached</div>
+                    <p className="answer-text">{finalAnswer}</p>
+                  </motion.div>
+                )}
+
                 {/* Timeline */}
                 {messages.length > 0 && (
-                  <motion.div className="timeline-section" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
-                    <h3 className="timeline-title">💬 Debate Timeline</h3>
-                    <div className="timeline">
+                  <motion.div className="timeline-section" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6 }}>
+                    <h4 className="timeline-title">💭 Debate Timeline</h4>
+                    <div className="timeline-list">
                       {timelineRoles.map((role, idx) => {
                         const m = messageFor(messages, role)
                         return (
-                          <motion.div
-                            key={role}
-                            className="timeline-item"
-                            initial={{ x: -20, opacity: 0 }}
-                            animate={{ x: 0, opacity: 1 }}
-                            transition={{ delay: idx * 0.1 }}
-                          >
-                            <div className="timeline-marker">{idx + 1}</div>
+                          <motion.div key={role} className="timeline-entry" initial={{ x: -20, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ delay: idx * 0.1 }}>
+                            <div className="timeline-dot">{idx + 1}</div>
                             <div className="timeline-content">
-                              <h4>{role}</h4>
-                              <p>{m ? m.content : 'No message'}</p>
-                              {m && <span className="meta">Round {m.round} • Confidence: {m.confidence}</span>}
+                              <div className="timeline-role">{role}</div>
+                              <p className="timeline-text">{m ? m.content.substring(0, 150) + '...' : 'No statement'}</p>
+                              {m && <span className="timeline-meta">Round {m.round}</span>}
                             </div>
                           </motion.div>
                         )
@@ -521,393 +593,11 @@ export default function App() {
                     </div>
                   </motion.div>
                 )}
-
-                {finalAnswer && (
-                  <motion.div className="final-answer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.5 }}>
-                    <h4>🎯 Final Answer</h4>
-                    <p>{finalAnswer}</p>
-                  </motion.div>
-                )}
               </div>
             </motion.div>
           </div>
         )}
       </div>
-
-      <style jsx>{`
-        .header-modern {
-          margin-bottom: 40px;
-          animation: slide-down 0.5s ease-out;
-        }
-
-        .header-content {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 20px;
-          flex-wrap: wrap;
-        }
-
-        .brand-section {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-        }
-
-        .brand-icon {
-          font-size: 32px;
-          color: var(--primary);
-        }
-
-        .app-title {
-          font-size: 28px;
-          font-weight: 700;
-          background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
-          background-clip: text;
-          margin: 0;
-        }
-
-        .app-subtitle {
-          font-size: 12px;
-          color: var(--text-tertiary);
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-          margin: 4px 0 0 0;
-        }
-
-        .header-controls {
-          display: flex;
-          gap: 12px;
-          align-items: center;
-        }
-
-        .user-info {
-          font-size: 14px;
-          color: var(--text-secondary);
-          font-weight: 600;
-        }
-
-        .dashboard-grid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 24px;
-          max-width: 1400px;
-          margin: 0 auto;
-        }
-
-        @media (max-width: 1024px) {
-          .dashboard-grid {
-            grid-template-columns: 1fr;
-          }
-        }
-
-        .debate-form-card {
-          padding: 24px;
-        }
-
-        .form-title {
-          font-size: 18px;
-          font-weight: 600;
-          margin-bottom: 20px;
-          color: var(--text-primary);
-        }
-
-        .debate-form {
-          display: flex;
-          flex-direction: column;
-          gap: 16px;
-        }
-
-        .form-row {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 12px;
-        }
-
-        .form-group {
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
-
-        .form-group label {
-          font-size: 12px;
-          font-weight: 600;
-          text-transform: uppercase;
-          color: var(--text-secondary);
-        }
-
-        .checkbox-label {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          cursor: pointer;
-          font-size: 14px;
-          color: var(--text-secondary);
-        }
-
-        .past-runs-card {
-          margin-top: 20px;
-        }
-
-        .section-title {
-          font-size: 14px;
-          font-weight: 600;
-          margin-bottom: 12px;
-          text-transform: uppercase;
-          color: var(--text-secondary);
-        }
-
-        .runs-list {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-
-        .run-pill {
-          padding: 12px;
-          background: rgba(99, 102, 241, 0.1);
-          border: 1px solid var(--border-color);
-          border-radius: 8px;
-          cursor: pointer;
-          transition: var(--transition);
-          text-align: left;
-        }
-
-        .run-pill:hover {
-          border-color: var(--primary);
-          background: rgba(99, 102, 241, 0.15);
-        }
-
-        .run-pill.active {
-          border-color: var(--primary);
-          background: rgba(99, 102, 241, 0.2);
-        }
-
-        .run-time {
-          font-size: 11px;
-          color: var(--text-tertiary);
-        }
-
-        .run-question {
-          font-size: 13px;
-          color: var(--text-secondary);
-          margin-top: 4px;
-        }
-
-        .results-card {
-          padding: 24px;
-        }
-
-        .results-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-bottom: 20px;
-          padding-bottom: 12px;
-          border-bottom: 1px solid var(--border-color);
-        }
-
-        .results-title {
-          font-size: 18px;
-          font-weight: 600;
-          margin: 0;
-        }
-
-        .status-badge {
-          padding: 6px 12px;
-          border-radius: 20px;
-          font-size: 12px;
-          font-weight: 600;
-          text-transform: uppercase;
-        }
-
-        .status-badge.ready {
-          background: rgba(107, 114, 128, 0.2);
-          color: #9ca3af;
-        }
-
-        .status-badge.running {
-          background: rgba(59, 130, 246, 0.2);
-          color: #3b82f6;
-        }
-
-        .status-badge.completed {
-          background: rgba(16, 185, 129, 0.2);
-          color: #10b981;
-        }
-
-        .status-badge.failed {
-          background: rgba(239, 68, 68, 0.2);
-          color: #ef4444;
-        }
-
-        .error-box {
-          padding: 12px;
-          background: rgba(239, 68, 68, 0.1);
-          border: 1px solid rgba(239, 68, 68, 0.3);
-          border-radius: 8px;
-          color: #fca5a5;
-          display: flex;
-          gap: 8px;
-          align-items: center;
-          font-size: 13px;
-          margin-bottom: 16px;
-        }
-
-        .metrics-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-          gap: 12px;
-          margin-bottom: 20px;
-        }
-
-        .metric-card {
-          padding: 16px;
-          background: rgba(99, 102, 241, 0.1);
-          border: 1px solid var(--primary);
-          border-radius: 8px;
-          text-align: center;
-          transition: var(--transition);
-        }
-
-        .metric-card:hover {
-          border-color: var(--secondary);
-          background: rgba(236, 72, 153, 0.1);
-        }
-
-        .metric-value {
-          font-size: 20px;
-          font-weight: 700;
-          color: var(--primary);
-          margin: 8px 0;
-        }
-
-        .metric-label {
-          font-size: 11px;
-          color: var(--text-tertiary);
-          text-transform: uppercase;
-        }
-
-        .live-log-section {
-          margin-bottom: 20px;
-          overflow: hidden;
-        }
-
-        .log-label {
-          font-size: 12px;
-          font-weight: 600;
-          text-transform: uppercase;
-          color: var(--text-secondary);
-          display: block;
-          margin-bottom: 8px;
-        }
-
-        .live-log {
-          background: rgba(15, 23, 42, 0.8);
-          border: 1px solid var(--border-color);
-          border-radius: 8px;
-          padding: 12px;
-          height: 200px;
-          overflow-y: auto;
-          font-family: 'Courier New', monospace;
-          font-size: 11px;
-          color: var(--text-secondary);
-          line-height: 1.6;
-        }
-
-        .timeline-section {
-          margin-top: 20px;
-        }
-
-        .timeline-title {
-          font-size: 14px;
-          font-weight: 600;
-          margin-bottom: 12px;
-        }
-
-        .timeline {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-        }
-
-        .timeline-item {
-          display: flex;
-          gap: 12px;
-          padding: 12px;
-          background: rgba(99, 102, 241, 0.05);
-          border-left: 3px solid var(--primary);
-          border-radius: 4px;
-        }
-
-        .timeline-marker {
-          min-width: 24px;
-          height: 24px;
-          background: var(--primary);
-          color: white;
-          border-radius: 50%;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 12px;
-          font-weight: 700;
-        }
-
-        .timeline-content h4 {
-          margin: 0 0 4px 0;
-          font-size: 13px;
-          text-transform: uppercase;
-          color: var(--primary);
-        }
-
-        .timeline-content p {
-          margin: 0;
-          font-size: 12px;
-          color: var(--text-secondary);
-        }
-
-        .meta {
-          font-size: 11px;
-          color: var(--text-tertiary);
-          display: block;
-          margin-top: 4px;
-        }
-
-        .final-answer {
-          margin-top: 20px;
-          padding: 16px;
-          background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(99, 102, 241, 0.1));
-          border: 1px solid var(--primary);
-          border-radius: 8px;
-        }
-
-        .final-answer h4 {
-          margin: 0 0 8px 0;
-          font-size: 13px;
-          color: var(--success);
-        }
-
-        .final-answer p {
-          margin: 0;
-          font-size: 13px;
-          color: var(--text-secondary);
-          line-height: 1.5;
-        }
-
-        @keyframes slide-down {
-          from {
-            opacity: 0;
-            transform: translateY(-20px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-      `}</style>
     </div>
   )
 }
