@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import LoginScreen from './LoginScreen.jsx'
+import CreateAgentPage from './CreateAgentPage.jsx'
 import {
   getMockDebateDetail,
   mergePastRunSummaries,
@@ -9,6 +10,15 @@ import {
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 const SESSION_KEY = 'arguenet_demo_session'
+const CUSTOM_AGENT_KEY = 'arguenet_custom_agent'
+const THEME_KEY = 'arguenet_theme'
+
+const THEME_OPTIONS = [
+  { value: 'indigo-dark', label: 'Dark Indigo' },
+  { value: 'dark-slate', label: 'Dark Slate' },
+  { value: 'light-blue-mint', label: 'Light Blue Mint' },
+  { value: 'sunset-cream', label: 'Sunset Cream' },
+]
 
 function loadSession() {
   try {
@@ -31,6 +41,45 @@ function saveSession(user) {
 function clearSession() {
   sessionStorage.removeItem(SESSION_KEY)
 }
+
+function loadTheme() {
+  try {
+    const raw = localStorage.getItem(THEME_KEY)
+    if (!raw) return 'indigo-dark'
+    if (THEME_OPTIONS.some((t) => t.value === raw)) return raw
+  } catch {
+    /* ignore */
+  }
+  return 'indigo-dark'
+}
+
+function saveTheme(theme) {
+  localStorage.setItem(THEME_KEY, theme)
+}
+
+function loadCustomAgent() {
+  try {
+    const raw = localStorage.getItem(CUSTOM_AGENT_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (typeof parsed?.name !== 'string' || !parsed.name.trim()) return null
+    return {
+      name: parsed.name.trim(),
+      persona: typeof parsed.persona === 'string' ? parsed.persona.trim() : '',
+      hobbies: typeof parsed.hobbies === 'string' ? parsed.hobbies.trim() : '',
+      opinions: typeof parsed.opinions === 'string' ? parsed.opinions.trim() : '',
+      communicationStyle:
+        typeof parsed.communicationStyle === 'string' ? parsed.communicationStyle.trim() : '',
+    }
+  } catch {
+    return null
+  }
+}
+
+function saveCustomAgent(agent) {
+  localStorage.setItem(CUSTOM_AGENT_KEY, JSON.stringify(agent))
+}
+
 const ROLES = ['advocate', 'critic', 'moderator']
 const DEFAULT_MAX_ROUNDS = 6
 const MAX_ROUNDS_LIMIT = 20
@@ -63,6 +112,8 @@ function messageFor(messages, role) {
 
 export default function App() {
   const [session, setSession] = useState(() => loadSession())
+  const [theme, setTheme] = useState(() => loadTheme())
+  const [activeView, setActiveView] = useState('dashboard')
   const [question, setQuestion] = useState('')
   const [maxRounds, setMaxRounds] = useState(String(DEFAULT_MAX_ROUNDS))
   const [failure, setFailure] = useState('none')
@@ -77,12 +128,24 @@ export default function App() {
   const [pastRuns, setPastRuns] = useState([])
   const [selectedRunId, setSelectedRunId] = useState(null)
   const [pastRunsError, setPastRunsError] = useState(null)
+  const [customAgent, setCustomAgent] = useState(() => loadCustomAgent())
+  const [includeCustomAgent, setIncludeCustomAgent] = useState(true)
+
+  const timelineRoles = useMemo(() => {
+    if (!customAgent || !includeCustomAgent) return ROLES
+    return [...ROLES, customAgent.name]
+  }, [customAgent, includeCustomAgent])
 
   useEffect(() => {
     const el = liveLogRef.current
     if (!el) return
     el.scrollTop = el.scrollHeight
   }, [liveRoundsLog])
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    saveTheme(theme)
+  }, [theme])
 
   async function fetchPastRuns() {
     setPastRunsError(null)
@@ -172,6 +235,7 @@ export default function App() {
       simulate_failure: failure !== 'none',
       failed_node: failure === 'none' ? null : failure,
       max_rounds: rounds,
+      custom_agent: customAgent && includeCustomAgent ? customAgent : null,
     }
 
     try {
@@ -249,6 +313,13 @@ export default function App() {
     setSession(null)
   }
 
+  function handleSaveAgent(agent) {
+    setCustomAgent(agent)
+    setIncludeCustomAgent(true)
+    saveCustomAgent(agent)
+    setActiveView('dashboard')
+  }
+
   if (!session) {
     return (
       <div className="app-shell">
@@ -272,6 +343,28 @@ export default function App() {
               </div>
             </div>
             <div className="session-bar">
+              <label className="theme-picker" htmlFor="theme-picker">
+                Theme
+              </label>
+              <select
+                id="theme-picker"
+                className="theme-select"
+                value={theme}
+                onChange={(e) => setTheme(e.target.value)}
+              >
+                {THEME_OPTIONS.map((t) => (
+                  <option key={t.value} value={t.value}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="session-logout"
+                onClick={() => setActiveView(activeView === 'dashboard' ? 'create-agent' : 'dashboard')}
+              >
+                {activeView === 'dashboard' ? 'Create agent' : 'Back to debate'}
+              </button>
               <span className="session-user" title={session.username}>
                 {session.username}
               </span>
@@ -282,54 +375,17 @@ export default function App() {
           </div>
         </header>
 
-        <nav className="past-runs-nav panel panel-subtle" aria-label="Past debates">
-        <div className="past-runs-head">
-          <span className="past-runs-title">Past runs</span>
-          <button type="button" className="nav-refresh" onClick={() => fetchPastRuns()}>
-            Refresh
-          </button>
-        </div>
-        {pastRunsError ? <p className="past-runs-error">{pastRunsError}</p> : null}
-        <div className="past-runs-scroll" role="list">
-          <button
-            type="button"
-            className={`nav-pill${selectedRunId === null ? ' nav-pill-active' : ''}`}
-            onClick={() => selectNewDraft()}
-            disabled={runStatus === 'running'}
-          >
-            New draft
-          </button>
-          {displayPastRuns.map((run) => {
-            const st = (run.status || '').toLowerCase()
-            const badge =
-              st === 'failed' ? 'failed' : st === 'completed' ? 'completed' : 'other'
-            const isMock = String(run.debate_id).startsWith('mock-')
-            return (
-              <button
-                key={run.debate_id}
-                type="button"
-                role="listitem"
-                className={`nav-pill${selectedRunId === run.debate_id ? ' nav-pill-active' : ''}${
-                  isMock ? ' nav-pill-mock' : ''
-                }`}
-                title={isMock ? `${run.question ?? ''} (demo mock)` : run.question ?? ''}
-                onClick={() => loadPastRun(run.debate_id)}
-                disabled={runStatus === 'running'}
-              >
-                {isMock ? <span className="nav-pill-demo-badge">Demo</span> : null}
-                <span className={`nav-pill-status nav-pill-status-${badge}`}>{run.status}</span>
-                {formatRunPillLabel(run.created_at, run.question ?? '')}
-              </button>
-            )
-          })}
-        </div>
-        {displayPastRuns.length === 0 && !pastRunsError ? (
-          <p className="past-runs-empty">No saved runs yet — run a debate to populate this list.</p>
-        ) : null}
-        </nav>
-
-        <div className="panel panel-compose">
-          <form className="controls" onSubmit={runDebate}>
+        {activeView === 'create-agent' ? (
+          <CreateAgentPage
+            initialAgent={customAgent}
+            onCancel={() => setActiveView('dashboard')}
+            onSave={handleSaveAgent}
+          />
+        ) : (
+          <div className="dashboard-layout">
+            <div className="dashboard-main">
+              <div className="panel panel-compose">
+                <form className="controls" onSubmit={runDebate}>
             <label className="label" htmlFor="question">
               Question
             </label>
@@ -362,6 +418,26 @@ export default function App() {
               1–{MAX_ROUNDS_LIMIT} (default {DEFAULT_MAX_ROUNDS}). Passed to the orchestrator as{' '}
               <code className="inline-code">ARGUENET_MAX_ROUNDS</code> for this run.
             </p>
+            <label className="label checkbox-row" htmlFor="include-custom-agent">
+              <input
+                id="include-custom-agent"
+                className="checkbox-input"
+                type="checkbox"
+                checked={includeCustomAgent}
+                onChange={(e) => setIncludeCustomAgent(e.target.checked)}
+                disabled={!customAgent || runStatus === 'running'}
+              />
+              Include custom agent in this run
+            </label>
+            {customAgent ? (
+              <div className="custom-agent-chip" title={customAgent.persona}>
+                <span className="custom-agent-chip-title">Custom agent:</span> {customAgent.name}
+              </div>
+            ) : (
+              <p className="field-hint">
+                No custom agent yet. Use <code className="inline-code">Create agent</code> above.
+              </p>
+            )}
             <label className="label" htmlFor="failure">
               Optional failure (demo)
             </label>
@@ -377,18 +453,18 @@ export default function App() {
               <option value="critic">critic</option>
               <option value="moderator">moderator</option>
             </select>
-            <button className="submit" type="submit" disabled={runStatus === 'running'}>
-              {runStatus === 'running' ? 'Running debate…' : 'Run debate'}
-            </button>
-          </form>
-        </div>
+                  <button className="submit" type="submit" disabled={runStatus === 'running'}>
+                    {runStatus === 'running' ? 'Running debate…' : 'Run debate'}
+                  </button>
+                </form>
+              </div>
 
-        <section className="bottom panel panel-output" aria-label="Debate output">
-          <div className="output-head">
-            <h2 className="output-title">Results</h2>
-            <span className={`status-pill status-pill--${runStatus}`}>{statusLabel}</span>
-          </div>
-          {error ? <p className="error">{error}</p> : null}
+              <section className="bottom panel panel-output" aria-label="Debate output">
+                <div className="output-head">
+                  <h2 className="output-title">Results</h2>
+                  <span className={`status-pill status-pill--${runStatus}`}>{statusLabel}</span>
+                </div>
+                {error ? <p className="error">{error}</p> : null}
 
           <label className="label" htmlFor="live-rounds">
             Live rounds
@@ -406,7 +482,7 @@ export default function App() {
 
           <h2 className="section-title">Debate timeline</h2>
           <ol className="timeline">
-            {ROLES.map((role) => {
+            {timelineRoles.map((role) => {
               const m = messageFor(messages, role)
               return (
                 <li key={role} className="card card-role">
@@ -431,21 +507,72 @@ export default function App() {
             <p className="card-body">{finalAnswer || '—'}</p>
           </div>
 
-          <div className="metrics">
-            <div className="card metric">
-              <div className="card-head">Agreement score</div>
-              <p className="card-body mono">
-                {agreementScore !== null ? agreementScore.toFixed(2) : '—'}
-              </p>
+                <div className="metrics">
+                  <div className="card metric">
+                    <div className="card-head">Agreement score</div>
+                    <p className="card-body mono">
+                      {agreementScore !== null ? agreementScore.toFixed(2) : '—'}
+                    </p>
+                  </div>
+                  <div className="card metric">
+                    <div className="card-head">Failed nodes</div>
+                    <p className="card-body mono">
+                      {failedNodes.length ? failedNodes.join(', ') : '—'}
+                    </p>
+                  </div>
+                </div>
+              </section>
             </div>
-            <div className="card metric">
-              <div className="card-head">Failed nodes</div>
-              <p className="card-body mono">
-                {failedNodes.length ? failedNodes.join(', ') : '—'}
-              </p>
-            </div>
+
+            <aside className="dashboard-side">
+              <nav className="past-runs-nav panel panel-subtle" aria-label="Past debates">
+                <div className="past-runs-head">
+                  <span className="past-runs-title">Past runs</span>
+                  <button type="button" className="nav-refresh" onClick={() => fetchPastRuns()}>
+                    Refresh
+                  </button>
+                </div>
+                {pastRunsError ? <p className="past-runs-error">{pastRunsError}</p> : null}
+                <div className="past-runs-scroll past-runs-scroll-side" role="list">
+                  <button
+                    type="button"
+                    className={`nav-pill${selectedRunId === null ? ' nav-pill-active' : ''}`}
+                    onClick={() => selectNewDraft()}
+                    disabled={runStatus === 'running'}
+                  >
+                    New draft
+                  </button>
+                  {displayPastRuns.map((run) => {
+                    const st = (run.status || '').toLowerCase()
+                    const badge =
+                      st === 'failed' ? 'failed' : st === 'completed' ? 'completed' : 'other'
+                    const isMock = String(run.debate_id).startsWith('mock-')
+                    return (
+                      <button
+                        key={run.debate_id}
+                        type="button"
+                        role="listitem"
+                        className={`nav-pill${selectedRunId === run.debate_id ? ' nav-pill-active' : ''}${
+                          isMock ? ' nav-pill-mock' : ''
+                        }`}
+                        title={isMock ? `${run.question ?? ''} (demo mock)` : run.question ?? ''}
+                        onClick={() => loadPastRun(run.debate_id)}
+                        disabled={runStatus === 'running'}
+                      >
+                        {isMock ? <span className="nav-pill-demo-badge">Demo</span> : null}
+                        <span className={`nav-pill-status nav-pill-status-${badge}`}>{run.status}</span>
+                        {formatRunPillLabel(run.created_at, run.question ?? '')}
+                      </button>
+                    )
+                  })}
+                </div>
+                {displayPastRuns.length === 0 && !pastRunsError ? (
+                  <p className="past-runs-empty">No saved runs yet — run a debate to populate this list.</p>
+                ) : null}
+              </nav>
+            </aside>
           </div>
-        </section>
+        )}
       </div>
     </div>
   )
