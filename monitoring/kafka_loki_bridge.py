@@ -27,11 +27,14 @@ import requests
 from confluent_kafka import Consumer, KafkaError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from arguenet.messaging.kafka_config import build_kafka_config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-LOKI_URL        = os.getenv("LOKI_URL", "http://localhost:3100")
+LOKI_URL        = os.getenv("GRAFANA_LOKI_URL", os.getenv("LOKI_URL", "http://localhost:3100"))
+LOKI_USER       = os.getenv("GRAFANA_LOKI_USER", "")
+LOKI_TOKEN      = os.getenv("GRAFANA_API_TOKEN", "")
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 TOPICS          = [
     "arguenet.debate.arguments",
@@ -47,19 +50,20 @@ def _now_ns() -> str:
 
 
 def _push_to_loki(labels: dict[str, str], message: str) -> bool:
-    """Push a single log line to Loki via the push API."""
+    """Push a single log line to Loki (local or Grafana Cloud)."""
     payload = {
         "streams": [{
             "stream": labels,
             "values": [[_now_ns(), message]],
         }]
     }
+    kwargs: dict = {"json": payload, "timeout": 5}
+    if LOKI_USER and LOKI_TOKEN:
+        kwargs["auth"] = (LOKI_USER, LOKI_TOKEN)
     try:
-        r = requests.post(
-            f"{LOKI_URL}/loki/api/v1/push",
-            json=payload,
-            timeout=5,
-        )
+        r = requests.post(f"{LOKI_URL}/loki/api/v1/push", **kwargs)
+        if r.status_code != 204:
+            logger.warning("Loki push returned %d: %s", r.status_code, r.text[:200])
         return r.status_code == 204
     except Exception as exc:
         logger.warning("Loki push failed: %s", exc)
@@ -67,16 +71,19 @@ def _push_to_loki(labels: dict[str, str], message: str) -> bool:
 
 
 def _format_log_line(topic: str, envelope: dict) -> str:
-    """Format a Kafka envelope as a human-readable log line."""
+    """Format a Kafka envelope as a human-readable log line including trace context."""
     msg_type  = envelope.get("message_type", "unknown")
     sender    = envelope.get("sender_id", "unknown")
     round_num = envelope.get("round_number", "?")
     payload   = envelope.get("payload", {})
+    trace_id  = envelope.get("trace_id", "")[:8]
+    span_id   = envelope.get("span_id", "")[:8]
+    trace_ctx = f"trace={trace_id} span={span_id} " if trace_id else ""
 
     if msg_type in ("argument", "counterargument"):
         content = payload.get("argument", payload.get("claim", ""))[:200]
         confidence = payload.get("confidence", "")
-        return (f"[{msg_type.upper()}] round={round_num} agent={sender} "
+        return (f"[{msg_type.upper()}] {trace_ctx}round={round_num} agent={sender} "
                 f"confidence={confidence} | {content}")
 
     elif msg_type == "evaluation":
@@ -85,13 +92,13 @@ def _format_log_line(topic: str, envelope: dict) -> str:
         feedback = payload.get("you_must_respond_to", payload.get("feedback", ""))
         if isinstance(feedback, list):
             feedback = " | ".join(feedback)
-        return (f"[EVALUATION] round={round_num} scored={agent_id} "
+        return (f"[EVALUATION] {trace_ctx}round={round_num} scored={agent_id} "
                 f"score={score} | {str(feedback)[:150]}")
 
     elif msg_type == "control":
         phase  = payload.get("phase", "")
         reason = payload.get("termination_reason", "")
-        return (f"[CONTROL] round={round_num} phase={phase} "
+        return (f"[CONTROL] {trace_ctx}round={round_num} phase={phase} "
                 + (f"reason={reason}" if reason else ""))
 
     elif topic.endswith("dlq"):
@@ -99,22 +106,24 @@ def _format_log_line(topic: str, envelope: dict) -> str:
         source_topic = payload.get("source_topic", "unknown")
         raw          = payload.get("raw", "")[:150]
         failed_at    = payload.get("failed_at", "")
-        return (f"[DLQ] source={source_topic} reason={reason} "
+        return (f"[DLQ] {trace_ctx}source={source_topic} reason={reason} "
                 f"failed_at={failed_at} | raw={raw}")
 
     else:
-        return f"[{msg_type.upper()}] round={round_num} sender={sender} | {str(payload)[:200]}"
+        return f"[{msg_type.upper()}] {trace_ctx}round={round_num} sender={sender} | {str(payload)[:200]}"
 
 
 def run_bridge():
-    group_id = f"loki-bridge-{uuid.uuid4()}"
-    consumer = Consumer({
-        "bootstrap.servers": KAFKA_BOOTSTRAP,
-        "group.id": group_id,
-        "auto.offset.reset": "latest",
-        "enable.auto.commit": True,
-        "group.protocol": "classic",
-    })
+    group_id = f"arguenet-loki-bridge-{uuid.uuid4()}"
+    consumer = Consumer(build_kafka_config(
+        KAFKA_BOOTSTRAP,
+        **{
+            "group.id": group_id,
+            "auto.offset.reset": "latest",
+            "enable.auto.commit": True,
+            "group.protocol": "classic",
+        },
+    ))
     consumer.subscribe(TOPICS)
 
     logger.info("ArgueNet Kafka→Loki bridge started")
@@ -143,6 +152,7 @@ def run_bridge():
                 debate_id = envelope.get("debate_id", "unknown")
                 round_num = str(envelope.get("round_number", "0"))
 
+                trace_id  = envelope.get("trace_id", "")
                 labels = {
                     "app":          "arguenet",
                     "topic":        topic.replace("arguenet.debate.", ""),
@@ -150,9 +160,12 @@ def run_bridge():
                     "message_type": msg_type,
                     "debate_id":    debate_id[:8],
                     "round":        round_num,
+                    "trace_id":     trace_id[:8] if trace_id else "none",
                 }
 
                 log_line = _format_log_line(topic, envelope)
+                logger.info("received topic=%-12s agent=%-18s %s",
+                            labels["topic"], sender, log_line[:80])
                 ok = _push_to_loki(labels, log_line)
 
                 if ok:

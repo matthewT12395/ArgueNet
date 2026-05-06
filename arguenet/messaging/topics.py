@@ -5,8 +5,9 @@ from __future__ import annotations
 CONTROL_TOPIC: str = "arguenet.debate.control"
 ARGUMENTS_TOPIC: str = "arguenet.debate.arguments"
 EVALUATIONS_TOPIC: str = "arguenet.debate.evaluations"
+DLQ_TOPIC: str = "arguenet.debate.dlq"
 
-ALL_TOPICS: list[str] = [CONTROL_TOPIC, ARGUMENTS_TOPIC, EVALUATIONS_TOPIC]
+ALL_TOPICS: list[str] = [CONTROL_TOPIC, ARGUMENTS_TOPIC, EVALUATIONS_TOPIC, DLQ_TOPIC]
 
 # ── Per-role routing table ────────────────────────────────────────────────────
 #

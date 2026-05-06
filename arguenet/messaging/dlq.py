@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
 from confluent_kafka import Consumer, Producer, KafkaException
 
+from .kafka_config import build_kafka_config
+
 logger = logging.getLogger(__name__)
 
 DLQ_TOPIC = "arguenet.debate.dlq"
-_DEFAULT_BOOTSTRAP = "localhost:9092"
 
 
 class DeadLetterQueue:
@@ -23,8 +25,10 @@ class DeadLetterQueue:
     inspect failures and replay them if needed.
     """
 
-    def __init__(self, bootstrap_servers: str = _DEFAULT_BOOTSTRAP) -> None:
-        self._producer = Producer({"bootstrap.servers": bootstrap_servers})
+    def __init__(self, bootstrap_servers: str | None = None) -> None:
+        if bootstrap_servers is None:
+            bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+        self._producer = Producer(build_kafka_config(bootstrap_servers))
 
     def send(
         self,
@@ -82,15 +86,19 @@ class DLQConsumer:
     def __init__(
         self,
         group_id: str = "arguenet-dlq-inspector",
-        bootstrap_servers: str = _DEFAULT_BOOTSTRAP,
+        bootstrap_servers: str | None = None,
     ) -> None:
-        self._consumer = Consumer({
-            "bootstrap.servers": bootstrap_servers,
-            "group.id": group_id,
-            "auto.offset.reset": "earliest",
-            "enable.auto.commit": True,
-            "group.protocol": "classic",
-        })
+        if bootstrap_servers is None:
+            bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+        self._consumer = Consumer(build_kafka_config(
+            bootstrap_servers,
+            **{
+                "group.id": group_id,
+                "auto.offset.reset": "earliest",
+                "enable.auto.commit": True,
+                "group.protocol": "classic",
+            },
+        ))
         self._consumer.subscribe([DLQ_TOPIC])
 
     def drain(self, timeout_ms: int = 5000) -> list[dict[str, Any]]:

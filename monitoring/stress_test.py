@@ -95,7 +95,7 @@ def scenario_lag(duration: int = 30):
     produced = [0]
 
     def fast_producer():
-        with ArgueNetProducer("localhost:9092") as p:
+        with ArgueNetProducer(os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")) as p:
             round_num = 1
             while not stop_event.is_set():
                 for agent in AGENTS:
@@ -106,7 +106,7 @@ def scenario_lag(duration: int = 30):
 
     def slow_consumer():
         with ArgueNetConsumer([ARGUMENTS_TOPIC], group_id=group_id,
-                              bootstrap_servers="localhost:9092",
+                              bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
                               auto_offset_reset="latest") as c:
             # Warm up partition assignment
             deadline = time.monotonic() + 8
@@ -143,7 +143,7 @@ def scenario_sustained(duration: int = 60, rate: int = 50):
     start = time.monotonic()
     deadline = start + duration
 
-    with ArgueNetProducer("localhost:9092") as producer:
+    with ArgueNetProducer(os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")) as producer:
         i = 0
         while time.monotonic() < deadline:
             agent = AGENTS[i % len(AGENTS)]
@@ -174,7 +174,7 @@ def main():
     print("=" * 60)
 
     if args.scenario == "burst":
-        with ArgueNetProducer("localhost:9092") as producer:
+        with ArgueNetProducer(os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")) as producer:
             scenario_burst(producer, args.count)
 
     elif args.scenario == "lag":
