@@ -67,16 +67,19 @@ def _push_to_loki(labels: dict[str, str], message: str) -> bool:
 
 
 def _format_log_line(topic: str, envelope: dict) -> str:
-    """Format a Kafka envelope as a human-readable log line."""
+    """Format a Kafka envelope as a human-readable log line including trace context."""
     msg_type  = envelope.get("message_type", "unknown")
     sender    = envelope.get("sender_id", "unknown")
     round_num = envelope.get("round_number", "?")
     payload   = envelope.get("payload", {})
+    trace_id  = envelope.get("trace_id", "")[:8]
+    span_id   = envelope.get("span_id", "")[:8]
+    trace_ctx = f"trace={trace_id} span={span_id} " if trace_id else ""
 
     if msg_type in ("argument", "counterargument"):
         content = payload.get("argument", payload.get("claim", ""))[:200]
         confidence = payload.get("confidence", "")
-        return (f"[{msg_type.upper()}] round={round_num} agent={sender} "
+        return (f"[{msg_type.upper()}] {trace_ctx}round={round_num} agent={sender} "
                 f"confidence={confidence} | {content}")
 
     elif msg_type == "evaluation":
@@ -85,13 +88,13 @@ def _format_log_line(topic: str, envelope: dict) -> str:
         feedback = payload.get("you_must_respond_to", payload.get("feedback", ""))
         if isinstance(feedback, list):
             feedback = " | ".join(feedback)
-        return (f"[EVALUATION] round={round_num} scored={agent_id} "
+        return (f"[EVALUATION] {trace_ctx}round={round_num} scored={agent_id} "
                 f"score={score} | {str(feedback)[:150]}")
 
     elif msg_type == "control":
         phase  = payload.get("phase", "")
         reason = payload.get("termination_reason", "")
-        return (f"[CONTROL] round={round_num} phase={phase} "
+        return (f"[CONTROL] {trace_ctx}round={round_num} phase={phase} "
                 + (f"reason={reason}" if reason else ""))
 
     elif topic.endswith("dlq"):
@@ -99,11 +102,11 @@ def _format_log_line(topic: str, envelope: dict) -> str:
         source_topic = payload.get("source_topic", "unknown")
         raw          = payload.get("raw", "")[:150]
         failed_at    = payload.get("failed_at", "")
-        return (f"[DLQ] source={source_topic} reason={reason} "
+        return (f"[DLQ] {trace_ctx}source={source_topic} reason={reason} "
                 f"failed_at={failed_at} | raw={raw}")
 
     else:
-        return f"[{msg_type.upper()}] round={round_num} sender={sender} | {str(payload)[:200]}"
+        return f"[{msg_type.upper()}] {trace_ctx}round={round_num} sender={sender} | {str(payload)[:200]}"
 
 
 def run_bridge():
@@ -143,6 +146,7 @@ def run_bridge():
                 debate_id = envelope.get("debate_id", "unknown")
                 round_num = str(envelope.get("round_number", "0"))
 
+                trace_id  = envelope.get("trace_id", "")
                 labels = {
                     "app":          "arguenet",
                     "topic":        topic.replace("arguenet.debate.", ""),
@@ -150,6 +154,7 @@ def run_bridge():
                     "message_type": msg_type,
                     "debate_id":    debate_id[:8],
                     "round":        round_num,
+                    "trace_id":     trace_id[:8] if trace_id else "none",
                 }
 
                 log_line = _format_log_line(topic, envelope)

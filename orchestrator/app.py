@@ -174,6 +174,7 @@ class DebateResponse(BaseModel):
     quorum_met: bool
     failed_nodes: List[str]
     created_at: str
+    trace_id: Optional[str] = None
 
 
 class DebateSummary(BaseModel):
@@ -278,6 +279,7 @@ def _finalize_debate_record(
         "quorum_met": quorum_met,
         "failed_nodes": failed_nodes,
         "created_at": created_at,
+        "trace_id": pipeline_result.get("trace_id"),
     }
 
 

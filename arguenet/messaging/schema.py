@@ -40,6 +40,11 @@ class MessageEnvelope(BaseModel):
     control         coordinator         debate agents + moderator
     arguments       debate agents       coordinator + moderator
     evaluations     moderator           coordinator + debate agents
+
+    Tracing fields
+    ──────────────
+    trace_id  — one UUID per debate; ties every envelope in that debate together
+    span_id   — one UUID per operation (phase + agent); identifies a single unit of work
     """
 
     message_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -55,6 +60,10 @@ class MessageEnvelope(BaseModel):
     timestamp: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
+
+    # distributed tracing
+    trace_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    span_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
 
     # serialised ControlPayload, Argument, or ModeratorScore
     payload: dict[str, Any]

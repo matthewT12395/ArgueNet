@@ -86,6 +86,8 @@ def _make_envelope(
     sender_id: str,
     payload: dict,
     target_ids: list[str] | None = None,
+    trace_id: str = "",
+    span_id: str = "",
 ) -> MessageEnvelope:
     return MessageEnvelope(
         debate_id=debate_id,
@@ -94,6 +96,8 @@ def _make_envelope(
         sender_id=sender_id,
         target_ids=target_ids or [],
         payload=payload,
+        trace_id=trace_id or str(uuid.uuid4()),
+        span_id=span_id or str(uuid.uuid4()),
     )
 
 
@@ -148,8 +152,12 @@ async def _run_debate_agent(
     debate_id: str,
     producer: ArgueNetProducer,
     loop: asyncio.AbstractEventLoop,
+    trace_id: str,
 ) -> Argument:
     """Invoke one debate agent LLM, publish the result to Kafka, and return it."""
+    span_id = str(uuid.uuid4())
+    logger.info("[trace=%s span=%s] %s round=%d phase=%s START", trace_id[:8], span_id[:8], agent_id, round_num, phase)
+
     result: Argument = await _invoke(
         agent,
         prompt,
@@ -167,11 +175,13 @@ async def _run_debate_agent(
         message_type=msg_type,
         sender_id=agent_id,
         payload=result.model_dump(),
+        trace_id=trace_id,
+        span_id=span_id,
     )
     await loop.run_in_executor(
         None, lambda: producer.send(ARGUMENTS_TOPIC, envelope)
     )
-    logger.info("debate=%s round=%d  %s published %s", debate_id, round_num, agent_id, msg_type)
+    logger.info("[trace=%s span=%s] %s published %s", trace_id[:8], span_id[:8], agent_id, msg_type)
     return result
 
 
@@ -185,8 +195,12 @@ async def _run_moderator_agent(
     debate_id: str,
     producer: ArgueNetProducer,
     loop: asyncio.AbstractEventLoop,
+    trace_id: str,
 ) -> list[ModeratorScore]:
     """Score the current arguments, publish each score to Kafka, and return them."""
+    span_id = str(uuid.uuid4())
+    logger.info("[trace=%s span=%s] moderator round=%d scoring START", trace_id[:8], span_id[:8], round_num)
+
     scores: list[ModeratorScore] = await score_round(
         round_num, question, moderator, arguments, history
     )
@@ -199,15 +213,14 @@ async def _run_moderator_agent(
             sender_id="moderator",
             target_ids=[score.agent_id],
             payload=score.model_dump(),
+            trace_id=trace_id,
+            span_id=span_id,
         )
         await loop.run_in_executor(
             None, lambda e=envelope: producer.send(EVALUATIONS_TOPIC, e)
         )
 
-    logger.info(
-        "debate=%s round=%d  moderator published %d evaluation(s)",
-        debate_id, round_num, len(scores),
-    )
+    logger.info("[trace=%s span=%s] moderator published %d evaluation(s)", trace_id[:8], span_id[:8], len(scores))
     return scores
 
 
@@ -225,6 +238,7 @@ async def _run_argue_phase(
     producer: ArgueNetProducer,
     result_consumer: ArgueNetConsumer,
     loop: asyncio.AbstractEventLoop,
+    trace_id: str,
 ) -> list[Argument]:
     """
     Phase 1: coordinate initial arguments from all debate agents.
@@ -234,25 +248,25 @@ async def _run_argue_phase(
     """
     set_registry(RoundSourceRegistry(round_num))
     names = agents_for_phase("argue")
+    phase_span = str(uuid.uuid4())
+    logger.info("[trace=%s span=%s] round=%d argue phase START", trace_id[:8], phase_span[:8], round_num)
 
-    # Broadcast phase-start signal to control topic
-    control_payload = ControlPayload(
-        phase="argue",
-        question=question,
-        prior_arguments=[a.model_dump() for a in history],
-        prior_scores=[s.model_dump() for s in scores],
-    )
     ctrl_envelope = _make_envelope(
         debate_id=debate_id,
         round_number=round_num,
         message_type="control",
         sender_id="coordinator",
-        payload=control_payload.model_dump(),
+        payload=ControlPayload(
+            phase="argue",
+            question=question,
+            prior_arguments=[a.model_dump() for a in history],
+            prior_scores=[s.model_dump() for s in scores],
+        ).model_dump(),
+        trace_id=trace_id,
+        span_id=phase_span,
     )
     await loop.run_in_executor(None, lambda: producer.send(CONTROL_TOPIC, ctrl_envelope))
-    logger.info("debate=%s round=%d  coordinator → argue phase", debate_id, round_num)
 
-    # All debate agents produce arguments concurrently; inject scorer feedback if available
     prompt = _prompt("argue", question, round_num, history, scores, feedback=feedback)
     results: list[Argument] = await asyncio.gather(*[
         _run_debate_agent(
@@ -264,13 +278,13 @@ async def _run_argue_phase(
             debate_id=debate_id,
             producer=producer,
             loop=loop,
+            trace_id=trace_id,
         )
         for n in names
     ])
 
-    # Fan-out: confirm Kafka delivery in background — debate flow does not block on this
+    logger.info("[trace=%s span=%s] round=%d argue phase DONE (%d agents)", trace_id[:8], phase_span[:8], round_num, len(results))
     asyncio.create_task(_collect_from_kafka(result_consumer, debate_id, round_num, names, loop))
-
     return results
 
 
@@ -285,6 +299,7 @@ async def _run_score_phase(
     producer: ArgueNetProducer,
     result_consumer: ArgueNetConsumer,
     loop: asyncio.AbstractEventLoop,
+    trace_id: str,
 ) -> list[ModeratorScore]:
     """
     Phase 2: moderator scores the current arguments.
@@ -292,21 +307,24 @@ async def _run_score_phase(
     Flow:
       coordinator → control(score) → [moderator scores] → evaluations topic
     """
-    control_payload = ControlPayload(
-        phase="score",
-        question=question,
-        prior_arguments=[a.model_dump() for a in arguments],
-        prior_scores=[],
-    )
+    phase_span = str(uuid.uuid4())
+    logger.info("[trace=%s span=%s] round=%d score phase START", trace_id[:8], phase_span[:8], round_num)
+
     ctrl_envelope = _make_envelope(
         debate_id=debate_id,
         round_number=round_num,
         message_type="control",
         sender_id="coordinator",
-        payload=control_payload.model_dump(),
+        payload=ControlPayload(
+            phase="score",
+            question=question,
+            prior_arguments=[a.model_dump() for a in arguments],
+            prior_scores=[],
+        ).model_dump(),
+        trace_id=trace_id,
+        span_id=phase_span,
     )
     await loop.run_in_executor(None, lambda: producer.send(CONTROL_TOPIC, ctrl_envelope))
-    logger.info("debate=%s round=%d  coordinator → score phase", debate_id, round_num)
 
     scores = await _run_moderator_agent(
         moderator=agents["moderator"],
@@ -317,11 +335,11 @@ async def _run_score_phase(
         debate_id=debate_id,
         producer=producer,
         loop=loop,
+        trace_id=trace_id,
     )
 
-    # Fan-out: confirm Kafka delivery in background
+    logger.info("[trace=%s span=%s] round=%d score phase DONE", trace_id[:8], phase_span[:8], round_num)
     asyncio.create_task(_collect_from_kafka(result_consumer, debate_id, round_num, ["moderator"], loop))
-
     return scores
 
 
@@ -338,6 +356,7 @@ async def _run_rebut_phase(
     producer: ArgueNetProducer,
     result_consumer: ArgueNetConsumer,
     loop: asyncio.AbstractEventLoop,
+    trace_id: str,
 ) -> list[Argument]:
     """
     Phase 3: debate agents rebut based on moderator feedback.
@@ -346,24 +365,25 @@ async def _run_rebut_phase(
       coordinator → control(rebut) → [agents invoke LLMs directly] → arguments topic (fan-out)
     """
     names = agents_for_phase("rebut")
+    phase_span = str(uuid.uuid4())
+    logger.info("[trace=%s span=%s] round=%d rebut phase START", trace_id[:8], phase_span[:8], round_num)
 
-    control_payload = ControlPayload(
-        phase="rebut",
-        question=question,
-        prior_arguments=[a.model_dump() for a in prior_arguments],
-        prior_scores=[s.model_dump() for s in scores],
-    )
     ctrl_envelope = _make_envelope(
         debate_id=debate_id,
         round_number=round_num,
         message_type="control",
         sender_id="coordinator",
-        payload=control_payload.model_dump(),
+        payload=ControlPayload(
+            phase="rebut",
+            question=question,
+            prior_arguments=[a.model_dump() for a in prior_arguments],
+            prior_scores=[s.model_dump() for s in scores],
+        ).model_dump(),
+        trace_id=trace_id,
+        span_id=phase_span,
     )
     await loop.run_in_executor(None, lambda: producer.send(CONTROL_TOPIC, ctrl_envelope))
-    logger.info("debate=%s round=%d  coordinator → rebut phase", debate_id, round_num)
 
-    # Inject scorer feedback so agents can incorporate prior-round critique
     prompt = _prompt("rebut", question, round_num, history, scores, prior_arguments, feedback=feedback)
     results: list[Argument] = await asyncio.gather(*[
         _run_debate_agent(
@@ -375,13 +395,13 @@ async def _run_rebut_phase(
             debate_id=debate_id,
             producer=producer,
             loop=loop,
+            trace_id=trace_id,
         )
         for n in names
     ])
 
-    # Fan-out: confirm Kafka delivery in background
+    logger.info("[trace=%s span=%s] round=%d rebut phase DONE (%d agents)", trace_id[:8], phase_span[:8], round_num, len(results))
     asyncio.create_task(_collect_from_kafka(result_consumer, debate_id, round_num, names, loop))
-
     return results
 
 
@@ -396,6 +416,7 @@ async def _run_scorer_phase(
     history: list[Argument],
     producer: ArgueNetProducer,
     loop: asyncio.AbstractEventLoop,
+    trace_id: str,
 ) -> RoundScore:
     """
     Phase 4: scorer agent fact-checks and ranks all agents; publishes summary to Kafka.
@@ -403,12 +424,15 @@ async def _run_scorer_phase(
     Flow:
       scorer invokes LLM → evaluation envelope per agent → evaluations topic (fan-out)
     """
+    phase_span = str(uuid.uuid4())
+    logger.info("[trace=%s span=%s] round=%d scorer phase START", trace_id[:8], phase_span[:8], round_num)
+
     round_score: RoundScore = await run_scorer(
         round_num, question, agents["scorer"], arguments, moderator_scores, history
     )
 
-    # Publish one evaluation envelope per agent to evaluations topic (non-blocking fan-out)
     for agent_id, score in round_score.all_scores.items():
+        agent_span = str(uuid.uuid4())
         envelope = _make_envelope(
             debate_id=debate_id,
             round_number=round_num,
@@ -423,13 +447,12 @@ async def _run_scorer_phase(
                 "winner": round_score.winner,
                 "summary": round_score.summary,
             },
+            trace_id=trace_id,
+            span_id=agent_span,
         )
         await loop.run_in_executor(None, lambda e=envelope: producer.send(EVALUATIONS_TOPIC, e))
 
-    logger.info(
-        "debate=%s round=%d  scorer published %d evaluation(s), winner=%s",
-        debate_id, round_num, len(round_score.all_scores), round_score.winner,
-    )
+    logger.info("[trace=%s span=%s] round=%d scorer phase DONE winner=%s", trace_id[:8], phase_span[:8], round_num, round_score.winner)
     return round_score
 
 
@@ -449,11 +472,14 @@ class KafkaDebateRunner:
 
     async def run(self, question: str) -> dict:
         debate_id = str(uuid.uuid4())
+        trace_id = str(uuid.uuid4())   # one trace_id per debate — flows through every envelope
         max_rounds = int(os.getenv("ARGUENET_MAX_ROUNDS", str(MAX_ROUNDS)))
         agents = build_agents()
         loop = asyncio.get_event_loop()
 
+        logger.info("[trace=%s] debate=%s START question=%r", trace_id[:8], debate_id[:8], question[:60])
         print(f"max rounds {max_rounds}")
+        print(f"trace_id: {trace_id}")
 
         # Unique consumer group IDs so coordinator gets all messages independently
         # of any external consumers that may be running.
@@ -498,6 +524,7 @@ class KafkaDebateRunner:
                     producer=producer,
                     result_consumer=result_consumer,
                     loop=loop,
+                    trace_id=trace_id,
                 )
                 print("Arguments completed")
 
@@ -513,6 +540,7 @@ class KafkaDebateRunner:
                     producer=producer,
                     result_consumer=result_consumer,
                     loop=loop,
+                    trace_id=trace_id,
                 )
 
                 # ── rebut ─────────────────────────────────────────────────────
@@ -529,6 +557,7 @@ class KafkaDebateRunner:
                     producer=producer,
                     result_consumer=result_consumer,
                     loop=loop,
+                    trace_id=trace_id,
                 )
                 print("Rebuttals completed")
 
@@ -544,6 +573,7 @@ class KafkaDebateRunner:
                     producer=producer,
                     result_consumer=result_consumer,
                     loop=loop,
+                    trace_id=trace_id,
                 )
                 print("Scoring completed")
 
@@ -559,6 +589,7 @@ class KafkaDebateRunner:
                     history=flat_history,
                     producer=producer,
                     loop=loop,
+                    trace_id=trace_id,
                 )
                 print(f"Scorer results: Winner = {round_score.winner}, Summary = {round_score.summary}")
                 current_feedback = round_score.feedback_for_agents
@@ -595,11 +626,15 @@ class KafkaDebateRunner:
                             question=question,
                             termination_reason=reason,
                         ).model_dump(),
+                        trace_id=trace_id,
                     )
                     await loop.run_in_executor(None, lambda: producer.send(CONTROL_TOPIC, term_envelope))
                     break
 
-        return build_consensus(history[-1], all_scores, reason)
+        result = build_consensus(history[-1], all_scores, reason)
+        result["trace_id"] = trace_id
+        logger.info("[trace=%s] debate=%s COMPLETE reason=%s", trace_id[:8], debate_id[:8], reason)
+        return result
 
 
 # ── CLI entry point ───────────────────────────────────────────────────────────
