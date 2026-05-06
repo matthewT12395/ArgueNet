@@ -20,11 +20,29 @@ except ModuleNotFoundError:  # pragma: no cover
     from arguenet.debate.round import run_round, score_round, run_scorer
     from arguenet.debate.termination import should_terminate
 
-async def main(question: str) -> dict:
+async def main(
+    question: str,
+    personal_agent_profile: dict[str, str] | None = None,
+    personal_agent_profiles: list[dict[str, str]] | None = None,
+    selected_example_agents: list[str] | None = None,
+) -> dict:
 
     max_rounds = int(os.getenv("ARGUENET_MAX_ROUNDS", str(MAX_ROUNDS)))
     print("max rounds ", max_rounds)
-    agents = build_agents()
+    agents = build_agents(
+        personal_profile=personal_agent_profile,
+        personal_profiles=personal_agent_profiles,
+        example_agent_ids=selected_example_agents,
+    )
+    if personal_agent_profile:
+        name = (personal_agent_profile.get("name") or "PersonalAgent").strip()
+        print(f"Personal agent enabled: {name}")
+    if personal_agent_profiles:
+        print(f"Additional friend agents enabled: {len(personal_agent_profiles)}")
+    if selected_example_agents:
+        print(f"Example agents enabled: {', '.join(selected_example_agents)}")
+    debate_agents = [name for name in agents if name not in {"moderator", "scorer"}]
+    print(f"Active debate agents ({len(debate_agents)}): {', '.join(debate_agents)}")
     history: list[list[Argument]] = []
     all_scores: list[ModeratorScore] = []
     all_round_scores: list[RoundScore] = []  # Track round scores with feedback

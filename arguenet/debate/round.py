@@ -63,42 +63,91 @@ def _parse(result, schema):
     return schema(**_json_payload(_extract_text(result)))
 
 
+def _coerce_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("argument", "claim", "steelman", "text", "content", "summary", "thesis"):
+            if key in value and str(value.get(key, "")).strip():
+                return str(value[key]).strip()
+        return str(value).strip()
+    if isinstance(value, list):
+        for item in value:
+            text = _coerce_text(item)
+            if text:
+                return text
+        return ""
+    return str(value).strip()
+
+
 def _normalize_argument_payload(payload: dict, *, agent_id: str, round_num: int, default_target: str) -> dict:
     out = dict(payload)
     out["agent_id"] = out.get("agent_id") or out.get("agent") or agent_id
     out["round"] = int(out.get("round") or round_num)
     out["update_type"] = str(out.get("update_type") or "refine")
     out["update_reasoning"] = str(out.get("update_reasoning") or out.get("update_rationale") or "Refined based on round feedback.")
-    argument_text = out.get("argument") or out.get("claim") or "No argument provided."
-    out["argument"] = str(argument_text)
 
-    claims = out.get("claims", [])
+    argument_text = _coerce_text(out.get("argument"))
+    if not argument_text:
+        argument_text = _coerce_text(out.get("claim"))
+    if not argument_text and isinstance(out.get("arguments"), list):
+        argument_text = _coerce_text(out.get("arguments"))
+    if not argument_text:
+        argument_text = "No argument provided."
+    out["argument"] = argument_text
+
+    claims = out.get("claims")
+    if claims is None:
+        claims = out.get("key_claims")
+    if claims is None:
+        claims = out.get("arguments")
+    if claims is None:
+        claims = out.get("evidence")
+
     if isinstance(claims, list):
         norm_claims = []
         for item in claims:
-            if isinstance(item, str):
-                norm_claims.append(item)
-            elif isinstance(item, dict):
-                norm_claims.append(str(item.get("text") or item.get("claim") or item))
-            else:
-                norm_claims.append(str(item))
+            text = _coerce_text(item)
+            if text:
+                norm_claims.append(text)
         out["claims"] = norm_claims
+    elif isinstance(claims, dict):
+        text = _coerce_text(claims)
+        out["claims"] = [text] if text else []
     else:
-        out["claims"] = [str(claims)]
+        text = _coerce_text(claims)
+        out["claims"] = [text] if text else []
 
-    sources = out.get("sources", [])
+    if not out["claims"] and argument_text and argument_text != "No argument provided.":
+        out["claims"] = [argument_text[:280]]
+
+    sources = out.get("sources")
+    if sources is None and isinstance(out.get("evidence"), dict):
+        ev = out.get("evidence")
+        sources = [ev.get("source") or ev.get("url") or ev.get("citation")]
+    if sources is None:
+        sources = []
+
     if isinstance(sources, list):
         norm_sources = []
         for item in sources:
             if isinstance(item, str):
-                norm_sources.append(item)
+                if item.strip():
+                    norm_sources.append(item.strip())
             elif isinstance(item, dict):
-                norm_sources.append(str(item.get("url") or item.get("description") or item.get("id") or item))
+                val = item.get("url") or item.get("source") or item.get("description") or item.get("id")
+                if val:
+                    norm_sources.append(str(val).strip())
             else:
-                norm_sources.append(str(item))
+                text = _coerce_text(item)
+                if text:
+                    norm_sources.append(text)
         out["sources"] = norm_sources
     else:
-        out["sources"] = [str(sources)]
+        text = _coerce_text(sources)
+        out["sources"] = [text] if text else []
 
     out["confidence"] = float(out.get("confidence", 0.6))
     out["position_delta"] = float(out.get("position_delta", 0.05))

@@ -222,6 +222,7 @@ async def _run_argue_phase(
     history: list[Argument],
     scores: list[ModeratorScore],
     feedback: dict[str, str] | None = None,
+    debate_agent_ids: list[str],
     producer: ArgueNetProducer,
     result_consumer: ArgueNetConsumer,
     loop: asyncio.AbstractEventLoop,
@@ -233,7 +234,7 @@ async def _run_argue_phase(
       coordinator → control(argue) → [agents invoke LLMs directly] → arguments topic (fan-out)
     """
     set_registry(RoundSourceRegistry(round_num))
-    names = agents_for_phase("argue")
+    names = agents_for_phase("argue", debate_agent_ids)
 
     # Broadcast phase-start signal to control topic
     control_payload = ControlPayload(
@@ -335,6 +336,7 @@ async def _run_rebut_phase(
     scores: list[ModeratorScore],
     history: list[Argument],
     feedback: dict[str, str] | None = None,
+    debate_agent_ids: list[str],
     producer: ArgueNetProducer,
     result_consumer: ArgueNetConsumer,
     loop: asyncio.AbstractEventLoop,
@@ -345,7 +347,7 @@ async def _run_rebut_phase(
     Flow:
       coordinator → control(rebut) → [agents invoke LLMs directly] → arguments topic (fan-out)
     """
-    names = agents_for_phase("rebut")
+    names = agents_for_phase("rebut", debate_agent_ids)
 
     control_payload = ControlPayload(
         phase="rebut",
@@ -447,10 +449,21 @@ class KafkaDebateRunner:
     def __init__(self, bootstrap_servers: str = "localhost:9092") -> None:
         self.bootstrap_servers = bootstrap_servers
 
-    async def run(self, question: str) -> dict:
+    async def run(
+        self,
+        question: str,
+        personal_agent_profile: dict[str, str] | None = None,
+        personal_agent_profiles: list[dict[str, str]] | None = None,
+        selected_example_agents: list[str] | None = None,
+    ) -> dict:
         debate_id = str(uuid.uuid4())
         max_rounds = int(os.getenv("ARGUENET_MAX_ROUNDS", str(MAX_ROUNDS)))
-        agents = build_agents()
+        agents = build_agents(
+            personal_profile=personal_agent_profile,
+            personal_profiles=personal_agent_profiles,
+            example_agent_ids=selected_example_agents,
+        )
+        debate_agent_ids = [name for name in agents if name not in {"moderator", "scorer"}]
         loop = asyncio.get_event_loop()
 
         print(f"max rounds {max_rounds}")
@@ -495,6 +508,7 @@ class KafkaDebateRunner:
                     history=flat_history,
                     scores=all_scores,
                     feedback=current_feedback,
+                    debate_agent_ids=debate_agent_ids,
                     producer=producer,
                     result_consumer=result_consumer,
                     loop=loop,
@@ -526,6 +540,7 @@ class KafkaDebateRunner:
                     scores=mid_scores,
                     history=flat_history,
                     feedback=current_feedback,
+                    debate_agent_ids=debate_agent_ids,
                     producer=producer,
                     result_consumer=result_consumer,
                     loop=loop,
@@ -604,9 +619,20 @@ class KafkaDebateRunner:
 
 # ── CLI entry point ───────────────────────────────────────────────────────────
 
-async def main(question: str, bootstrap_servers: str = "localhost:9092") -> dict:
+async def main(
+    question: str,
+    bootstrap_servers: str = "localhost:9092",
+    personal_agent_profile: dict[str, str] | None = None,
+    personal_agent_profiles: list[dict[str, str]] | None = None,
+    selected_example_agents: list[str] | None = None,
+) -> dict:
     runner = KafkaDebateRunner(bootstrap_servers=bootstrap_servers)
-    return await runner.run(question)
+    return await runner.run(
+        question,
+        personal_agent_profile=personal_agent_profile,
+        personal_agent_profiles=personal_agent_profiles,
+        selected_example_agents=selected_example_agents,
+    )
 
 
 if __name__ == "__main__":

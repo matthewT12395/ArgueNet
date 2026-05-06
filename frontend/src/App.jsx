@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import LoginScreen from './LoginScreen.jsx'
 import CreateAgentPage from './CreateAgentPage.jsx'
+import FriendsPage from './FriendsPage.jsx'
 import {
   getMockDebateDetail,
   mergePastRunSummaries,
@@ -11,6 +12,7 @@ import {
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 const SESSION_KEY = 'arguenet_demo_session'
 const CUSTOM_AGENT_KEY = 'arguenet_custom_agent'
+const FRIENDS_KEY = 'arguenet_friends'
 const THEME_KEY = 'arguenet_theme'
 
 const THEME_OPTIONS = [
@@ -80,9 +82,29 @@ function saveCustomAgent(agent) {
   localStorage.setItem(CUSTOM_AGENT_KEY, JSON.stringify(agent))
 }
 
+function loadFriends() {
+  try {
+    const raw = localStorage.getItem(FRIENDS_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((f) => f && typeof f.id === 'string' && typeof f.name === 'string')
+  } catch {
+    return []
+  }
+}
+
+function saveFriends(friends) {
+  localStorage.setItem(FRIENDS_KEY, JSON.stringify(friends))
+}
+
 const ROLES = ['advocate', 'critic', 'moderator']
 const DEFAULT_MAX_ROUNDS = 6
 const MAX_ROUNDS_LIMIT = 20
+const EXAMPLE_AGENT_OPTIONS = [
+  { id: 'policy_hawk', label: 'Policy Hawk' },
+  { id: 'startup_founder', label: 'Startup Founder' },
+]
 
 const PAST_RUN_LIVE_NOTE =
   '(Live log is only captured during a stream. This saved run shows the summary and timeline below.)\n\n'
@@ -123,6 +145,10 @@ export default function App() {
   const [finalAnswer, setFinalAnswer] = useState('')
   const [agreementScore, setAgreementScore] = useState(null)
   const [failedNodes, setFailedNodes] = useState([])
+  const [participants, setParticipants] = useState([])
+  const [selectedExampleAgents, setSelectedExampleAgents] = useState([])
+  const [friends, setFriends] = useState(() => loadFriends())
+  const [selectedFriendIds, setSelectedFriendIds] = useState(new Set())
   const [liveRoundsLog, setLiveRoundsLog] = useState('')
   const liveLogRef = useRef(null)
   const [pastRuns, setPastRuns] = useState([])
@@ -176,6 +202,8 @@ export default function App() {
     setFinalAnswer('')
     setAgreementScore(null)
     setFailedNodes([])
+    setParticipants([])
+    setSelectedFriendIds(new Set())
     setLiveRoundsLog('')
   }
 
@@ -211,8 +239,37 @@ export default function App() {
     setFinalAnswer(data.final_answer ?? '')
     setAgreementScore(typeof data.agreement_score === 'number' ? data.agreement_score : null)
     setFailedNodes(data.failed_nodes ?? [])
+    if (Array.isArray(data.participants) && data.participants.length) {
+      setParticipants(data.participants)
+    } else {
+      setParticipants(data.messages ?? [])
+    }
     const s = (data.status ?? '').toLowerCase()
     setRunStatus(s === 'completed' ? 'completed' : s === 'failed' ? 'failed' : 'completed')
+  }
+
+  function toggleFriendSelection(id) {
+    setSelectedFriendIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function handleSaveFriends(updatedFriends) {
+    setFriends(updatedFriends)
+    saveFriends(updatedFriends)
+    setSelectedFriendIds((prev) => {
+      const validIds = new Set(updatedFriends.map((f) => f.id))
+      return new Set([...prev].filter((id) => validIds.has(id)))
+    })
+  }
+
+  function toggleExampleAgent(id) {
+    setSelectedExampleAgents((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    )
   }
 
   async function runDebate(e) {
@@ -224,18 +281,43 @@ export default function App() {
     setFinalAnswer('')
     setAgreementScore(null)
     setFailedNodes([])
+    setParticipants([])
     setLiveRoundsLog('')
 
     const n = parseInt(String(maxRounds).trim(), 10)
     const rounds =
       Number.isFinite(n) && n >= 1 ? Math.min(MAX_ROUNDS_LIMIT, Math.max(1, n)) : DEFAULT_MAX_ROUNDS
 
+    const personalAgents = friends
+      .filter((f) => selectedFriendIds.has(f.id))
+      .map((f) => ({
+        name: f.name.trim(),
+        background: f.background.trim(),
+        hobbies: f.hobbies.trim(),
+        interests: f.interests.trim(),
+        beliefs: f.beliefs.trim(),
+      }))
+
+    const personalAgent =
+      customAgent && includeCustomAgent
+        ? {
+            name: customAgent.name.trim(),
+            background: customAgent.persona.trim(),
+            hobbies: customAgent.hobbies.trim(),
+            interests: '',
+            beliefs: customAgent.opinions.trim(),
+            communication_style: customAgent.communicationStyle.trim(),
+          }
+        : null
+
     const body = {
       question: question.trim(),
       simulate_failure: failure !== 'none',
       failed_node: failure === 'none' ? null : failure,
       max_rounds: rounds,
-      custom_agent: customAgent && includeCustomAgent ? customAgent : null,
+      personal_agent: personalAgent,
+      personal_agents: personalAgents,
+      selected_example_agents: selectedExampleAgents,
     }
 
     try {
@@ -358,13 +440,32 @@ export default function App() {
                   </option>
                 ))}
               </select>
-              <button
-                type="button"
-                className="session-logout"
-                onClick={() => setActiveView(activeView === 'dashboard' ? 'create-agent' : 'dashboard')}
-              >
-                {activeView === 'dashboard' ? 'Create agent' : 'Back to debate'}
-              </button>
+              {activeView !== 'dashboard' ? (
+                <button
+                  type="button"
+                  className="session-logout"
+                  onClick={() => setActiveView('dashboard')}
+                >
+                  ← Dashboard
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="session-logout"
+                    onClick={() => setActiveView('create-agent')}
+                  >
+                    Create agent
+                  </button>
+                  <button
+                    type="button"
+                    className="session-logout"
+                    onClick={() => setActiveView('friends')}
+                  >
+                    Friends
+                  </button>
+                </>
+              )}
               <span className="session-user" title={session.username}>
                 {session.username}
               </span>
@@ -380,6 +481,12 @@ export default function App() {
             initialAgent={customAgent}
             onCancel={() => setActiveView('dashboard')}
             onSave={handleSaveAgent}
+          />
+        ) : activeView === 'friends' ? (
+          <FriendsPage
+            friends={friends}
+            onSave={handleSaveFriends}
+            onBack={() => setActiveView('dashboard')}
           />
         ) : (
           <div className="dashboard-layout">
@@ -453,18 +560,76 @@ export default function App() {
               <option value="critic">critic</option>
               <option value="moderator">moderator</option>
             </select>
-                  <button className="submit" type="submit" disabled={runStatus === 'running'}>
-                    {runStatus === 'running' ? 'Running debate…' : 'Run debate'}
-                  </button>
-                </form>
-              </div>
 
-              <section className="bottom panel panel-output" aria-label="Debate output">
-                <div className="output-head">
-                  <h2 className="output-title">Results</h2>
-                  <span className={`status-pill status-pill--${runStatus}`}>{statusLabel}</span>
-                </div>
-                {error ? <p className="error">{error}</p> : null}
+            <label className="label">Example agents (optional)</label>
+            <div className="meta" style={{ gap: '0.75rem', flexWrap: 'wrap' }}>
+              {EXAMPLE_AGENT_OPTIONS.map((opt) => (
+                <label key={opt.id} className="meta">
+                  <input
+                    type="checkbox"
+                    checked={selectedExampleAgents.includes(opt.id)}
+                    onChange={() => toggleExampleAgent(opt.id)}
+                    disabled={runStatus === 'running'}
+                  />
+                  {opt.label}
+                </label>
+              ))}
+            </div>
+
+            <label className="label">Friends (optional)</label>
+            {friends.length === 0 ? (
+              <p className="field-hint">
+                No friends saved.{' '}
+                <button
+                  type="button"
+                  className="link-btn"
+                  onClick={() => setActiveView('friends')}
+                  disabled={runStatus === 'running'}
+                >
+                  Manage friends →
+                </button>
+              </p>
+            ) : (
+              <div className="friend-chips">
+                {friends.map((f) => (
+                  <label
+                    key={f.id}
+                    className={`friend-chip${selectedFriendIds.has(f.id) ? ' friend-chip--selected' : ''}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedFriendIds.has(f.id)}
+                      onChange={() => toggleFriendSelection(f.id)}
+                      disabled={runStatus === 'running'}
+                    />
+                    <span className="friend-chip-avatar">{f.name[0].toUpperCase()}</span>
+                    {f.name}
+                  </label>
+                ))}
+                <button
+                  type="button"
+                  className="link-btn"
+                  onClick={() => setActiveView('friends')}
+                  disabled={runStatus === 'running'}
+                  style={{ alignSelf: 'center', marginLeft: 'auto' }}
+                >
+                  Edit →
+                </button>
+              </div>
+            )}
+
+            <button className="submit" type="submit" disabled={runStatus === 'running'}>
+              {runStatus === 'running' ? 'Running debate…' : 'Run debate'}
+            </button>
+          </form>
+        </div>
+
+        <section className="bottom panel panel-output" aria-label="Debate output">
+          <div className="output-head">
+            <h2 className="output-title">Results</h2>
+            <span className={`status-pill status-pill--${runStatus}`}>{statusLabel}</span>
+          </div>
+          {error ? <p className="error">{error}</p> : null}
 
           <label className="label" htmlFor="live-rounds">
             Live rounds
@@ -483,7 +648,21 @@ export default function App() {
           <h2 className="section-title">Debate timeline</h2>
           <ol className="timeline">
             {timelineRoles.map((role) => {
-              const m = messageFor(messages, role)
+              const m = messageFor(messages, role) ?? (
+                customAgent && role === customAgent.name
+                  ? participants.find(
+                      (p) =>
+                        p.sender ===
+                        'friend_' +
+                          role
+                            .trim()
+                            .toLowerCase()
+                            .replace(/[^a-z0-9]+/g, '_')
+                            .replace(/_+/g, '_')
+                            .replace(/^_|_$/, ''),
+                    ) ?? null
+                  : null
+              )
               return (
                 <li key={role} className="card card-role">
                 <div className="card-head">{role}</div>
@@ -500,6 +679,19 @@ export default function App() {
               </li>
               )
             })}
+          </ol>
+
+          <h2 className="section-title">Participants (Dynamic)</h2>
+          <ol className="timeline">
+            {participants.map((p, idx) => (
+              <li key={`${p.sender}-${idx}`} className="card card-role">
+                <div className="card-head">{p.sender}</div>
+                <p className="card-body">{p.content}</p>
+                <div className="meta">
+                  round {p.round} · confidence {p.confidence}
+                </div>
+              </li>
+            ))}
           </ol>
 
           <div className="card final card-highlight">

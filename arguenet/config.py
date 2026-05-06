@@ -47,6 +47,7 @@ AGENT_TEMPS = {
     "empiricist": 0.4,
     "moderator": 0.2,
     "scorer": 0.3,
+    "personal_agent": 0.65,
 }
 
 AGENT_SOURCE_TYPES = {
@@ -56,6 +57,7 @@ AGENT_SOURCE_TYPES = {
     "empiricist": ["news", "wiki", "scraper"],
     "moderator": [],
     "scorer": [],
+    "personal_agent": ["news", "wiki", "reddit"],
 }
 
 MAX_ROUNDS = 6

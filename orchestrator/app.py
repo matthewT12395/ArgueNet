@@ -107,7 +107,13 @@ class _StdoutLineTee:
 
 
 def _run_debate_with_stdout_tee(
-    question: str, log_q: queue.SimpleQueue, outcome: dict, max_rounds: Optional[int]
+    question: str,
+    log_q: queue.SimpleQueue,
+    outcome: dict,
+    max_rounds: Optional[int],
+    personal_agent_profile: Optional[dict],
+    personal_agent_profiles: Optional[List[dict]],
+    selected_example_agents: Optional[List[str]],
 ) -> None:
     """Runs asyncio.run(main) in a worker thread while teeing stdout to log_q."""
     import logging as _logging
@@ -127,7 +133,14 @@ def _run_debate_with_stdout_tee(
 
     try:
         with _max_rounds_env(max_rounds):
-            outcome["result"] = asyncio.run(run_arguenet_main(question))
+            outcome["result"] = asyncio.run(
+                run_arguenet_main(
+                    question,
+                    personal_agent_profile=personal_agent_profile,
+                    personal_agent_profiles=personal_agent_profiles,
+                    selected_example_agents=selected_example_agents,
+                )
+            )
     except Exception as exc:
         outcome["error"] = exc
     finally:
@@ -142,10 +155,31 @@ def _run_debate_with_stdout_tee(
 # ----------------------------
 # Request / Response Models
 # ----------------------------
+class PersonalAgentProfile(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    background: Optional[str] = Field(default="", max_length=1000)
+    hobbies: Optional[str] = Field(default="", max_length=1000)
+    interests: Optional[str] = Field(default="", max_length=1000)
+    beliefs: Optional[str] = Field(default="", max_length=1000)
+    communication_style: Optional[str] = Field(default="", max_length=500)
+
+
 class DebateRequest(BaseModel):
     question: str
     simulate_failure: Optional[bool] = False
     failed_node: Optional[str] = None  # advocate | critic | moderator
+    personal_agent: Optional[PersonalAgentProfile] = Field(
+        default=None,
+        description="Placeholder for frontend custom persona fields used to create a runtime personal agent.",
+    )
+    personal_agents: List[PersonalAgentProfile] = Field(
+        default_factory=list,
+        description="Optional list of additional friend agents to include in this run.",
+    )
+    selected_example_agents: List[str] = Field(
+        default_factory=list,
+        description="Optional list of predefined example agent IDs (for example: policy_hawk, startup_founder).",
+    )
     max_rounds: Optional[int] = Field(
         default=None,
         ge=1,
@@ -174,6 +208,7 @@ class DebateResponse(BaseModel):
     quorum_met: bool
     failed_nodes: List[str]
     created_at: str
+    participants: List[AgentMessage] = []
 
 
 class DebateSummary(BaseModel):
@@ -235,6 +270,57 @@ def _build_messages(result: dict, failed_nodes: List[str], round_num: int) -> Li
     return messages
 
 
+def _build_participants(result: dict, failed_nodes: List[str], round_num: int) -> List[dict]:
+    now = datetime.utcnow().isoformat()
+    confidence = round(float(result.get("confidence", 0.0)), 2)
+    participants: List[dict] = []
+    used: set[str] = set()
+
+    round_scores = result.get("round_scores")
+    if isinstance(round_scores, list) and round_scores:
+        last = round_scores[-1] if isinstance(round_scores[-1], dict) else {}
+        all_arguments = last.get("all_arguments") if isinstance(last, dict) else {}
+        if isinstance(all_arguments, dict):
+            for agent_id, content in all_arguments.items():
+                sender = str(agent_id)
+                if sender in failed_nodes:
+                    continue
+                participants.append(
+                    {
+                        "sender": sender,
+                        "position": "participant",
+                        "content": str(content),
+                        "confidence": confidence,
+                        "round": round_num,
+                        "timestamp": now,
+                    }
+                )
+                used.add(sender)
+
+    dissent_items = result.get("dissent_log", []) or []
+    for item in dissent_items:
+        sender = str(item.get("agent", "")).strip()
+        if not sender or sender in used or sender in failed_nodes:
+            continue
+        participants.append(
+            {
+                "sender": sender,
+                "position": "participant",
+                "content": str(item.get("objection", "")).strip() or "No response generated.",
+                "confidence": confidence,
+                "round": round_num,
+                "timestamp": now,
+            }
+        )
+        used.add(sender)
+
+    return participants
+
+
+def _payload_personal_agents(payload: DebateRequest) -> List[dict]:
+    return [profile.model_dump(exclude_none=True) for profile in payload.personal_agents]
+
+
 # ----------------------------
 # Debate runner
 # ----------------------------
@@ -255,6 +341,7 @@ def _finalize_debate_record(
         failed_nodes.append(failed_node)
 
     messages = _build_messages(pipeline_result, failed_nodes, round_num)
+    participants = _build_participants(pipeline_result, failed_nodes, round_num)
     if not messages or len(messages) < 2:
         status = "failed"
         quorum_met = False
@@ -278,6 +365,7 @@ def _finalize_debate_record(
         "quorum_met": quorum_met,
         "failed_nodes": failed_nodes,
         "created_at": created_at,
+        "participants": participants,
     }
 
 
@@ -286,6 +374,9 @@ def execute_debate(
     simulate_failure: bool = False,
     failed_node: Optional[str] = None,
     max_rounds: Optional[int] = None,
+    personal_agent_profile: Optional[dict] = None,
+    personal_agent_profiles: Optional[List[dict]] = None,
+    selected_example_agents: Optional[List[str]] = None,
 ) -> dict:
     debate_id = str(uuid4())
     created_at = datetime.utcnow().isoformat()
@@ -296,7 +387,14 @@ def execute_debate(
 
     try:
         with _max_rounds_env(max_rounds):
-            pipeline_result = asyncio.run(run_arguenet_main(question))
+            pipeline_result = asyncio.run(
+                run_arguenet_main(
+                    question,
+                    personal_agent_profile=personal_agent_profile,
+                    personal_agent_profiles=personal_agent_profiles,
+                    selected_example_agents=selected_example_agents,
+                )
+            )
     except Exception as exc:
         return {
             "debate_id": debate_id,
@@ -309,6 +407,7 @@ def execute_debate(
             "quorum_met": False,
             "failed_nodes": failed_nodes,
             "created_at": created_at,
+            "participants": [],
         }
 
     debate_record = _finalize_debate_record(
@@ -342,6 +441,11 @@ def create_debate(payload: DebateRequest):
         simulate_failure=payload.simulate_failure,
         failed_node=payload.failed_node,
         max_rounds=payload.max_rounds,
+        personal_agent_profile=(
+            payload.personal_agent.model_dump(exclude_none=True) if payload.personal_agent else None
+        ),
+        personal_agent_profiles=_payload_personal_agents(payload),
+        selected_example_agents=list(payload.selected_example_agents),
     )
     return result
 
@@ -369,7 +473,16 @@ async def create_debate_stream(payload: DebateRequest):
         loop = asyncio.get_running_loop()
         exec_fut = loop.run_in_executor(
             None,
-            partial(_run_debate_with_stdout_tee, question, log_q, outcome, payload.max_rounds),
+            partial(
+                _run_debate_with_stdout_tee,
+                question,
+                log_q,
+                outcome,
+                payload.max_rounds,
+                payload.personal_agent.model_dump(exclude_none=True) if payload.personal_agent else None,
+                _payload_personal_agents(payload),
+                list(payload.selected_example_agents),
+            ),
         )
         try:
             while True:
@@ -393,6 +506,7 @@ async def create_debate_stream(payload: DebateRequest):
                 "quorum_met": False,
                 "failed_nodes": failed_nodes,
                 "created_at": created_at,
+                "participants": [],
             }
             debates[debate_id] = err_record
             yield json.dumps({"event": "error", "detail": str(err), "debate": err_record}) + "\n"

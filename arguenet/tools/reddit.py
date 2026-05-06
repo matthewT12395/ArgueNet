@@ -15,6 +15,13 @@ _LAST_CALL: float = 0.0
 _MIN_INTERVAL = 1.1  # seconds between requests to stay under rate limit
 
 
+def _request_timeout() -> float:
+    try:
+        return float(os.getenv("ARGUENET_TOOL_TIMEOUT", "6"))
+    except Exception:
+        return 6.0
+
+
 @tool
 def search_reddit(query: str) -> list[dict]:
     """Search Reddit discussions relevant to the query using public JSON endpoints."""
@@ -33,7 +40,7 @@ def search_reddit(query: str) -> list[dict]:
             "https://www.reddit.com/search.json",
             params={"q": query, "sort": "relevance", "limit": 5},
             headers=headers,
-            timeout=10,
+            timeout=_request_timeout(),
         )
         _LAST_CALL = time.monotonic()
         resp.raise_for_status()
