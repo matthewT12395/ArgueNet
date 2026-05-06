@@ -18,6 +18,10 @@ except ImportError:  # pragma: no cover
 NEWS_DOMAINS = ["reuters.com", "apnews.com", "bbc.com", "nytimes.com"]
 
 
+def _env_true(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 @tool
 def search_news(query: str) -> list[dict]:
     """Search news articles relevant to the query."""
@@ -39,6 +43,9 @@ def search_news(query: str) -> list[dict]:
 
 
 def build_tools(agent_id: str, source_types: list[str]) -> list:
+    if _env_true("ARGUENET_DISABLE_TOOLS"):
+        return []
+
     all_tools = {"news": search_news, "reddit": search_reddit, "wiki": search_wiki, "scraper": scrape_article}
     enabled = []
     for source in source_types:

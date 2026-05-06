@@ -20,7 +20,7 @@ def message_type_for_phase(phase: Phase) -> MessageType:
     }[phase]
 
 
-def agents_for_phase(phase: Phase) -> list[str]:
+def agents_for_phase(phase: Phase, debate_agents: list[str] | None = None) -> list[str]:
     """
     Return the ordered list of agent IDs that must produce output in a phase.
 
@@ -29,6 +29,8 @@ def agents_for_phase(phase: Phase) -> list[str]:
     terminate      → no agents respond
     """
     if phase in ("argue", "rebut"):
+        if debate_agents is not None:
+            return list(debate_agents)
         return list(DEBATE_AGENTS)      # advocate, skeptic, devils_advocate, empiricist
     if phase == "score":
         return ["moderator"]

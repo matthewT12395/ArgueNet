@@ -92,6 +92,28 @@ The login screen is **frontend-only** for now: use **any password**. Leave the u
 
 Restarting the orchestrator clears in-memory stored debates. The frontend also ships **mock “past runs”** (labeled **Demo**) so the nav is usable before you accumulate real runs.
 
+### Deploy backend to Render (free tier)
+#random test
+This repo includes a ready-to-use Render blueprint at `render.yaml` for the FastAPI orchestrator.
+
+1. Push this repo to GitHub.
+2. In Render: **New +** → **Blueprint** → select this repo.
+3. Render will detect `render.yaml` and create `arguenet-orchestrator`.
+4. In Render service settings, add required secret env vars:
+   - `OPENROUTER_API_KEY`
+   - `TAVILY_API_KEY`
+   - `REDDIT_CLIENT_ID`
+   - `REDDIT_CLIENT_SECRET`
+   - `REDDIT_USER_AGENT`
+   - (optional) `ARGUENET_MAX_ROUNDS`
+5. Deploy and verify:
+   - `https://<your-render-service>.onrender.com/health` returns `{"status":"ok",...}`
+
+Then point your Vercel frontend at Render:
+
+- Set `VITE_API_BASE=https://<your-render-service>.onrender.com` in Vercel project env vars.
+- Redeploy Vercel frontend.
+
 ---
 
 ## Kafka Messaging Layer
