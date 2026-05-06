@@ -263,7 +263,22 @@ export default function App() {
     fetchPastRuns()
   }, [session])
 
-  const displayPastRuns = useMemo(() => mergePastRunSummaries(pastRuns), [pastRuns])
+  const displayPastRuns = useMemo(() => {
+    const serverList = mergePastRunSummaries(pastRuns)
+    const seen = new Set(serverList.map((r) => r.debate_id))
+    const cachedOnly = runHistory
+      .filter((r) => r.debate_id && !seen.has(r.debate_id))
+      .map((r) => ({
+        debate_id: r.debate_id,
+        question: r.question ?? '',
+        status: 'completed',
+        round: r.roundsCount ?? 0,
+        created_at: r.finished_at ?? '',
+      }))
+    return [...cachedOnly, ...serverList].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    )
+  }, [pastRuns, runHistory])
 
   function selectNewDraft() {
     setSelectedRunId(null)
@@ -279,6 +294,10 @@ export default function App() {
   }
 
   async function loadPastRun(debateId) {
+    if (!debateId) {
+      setError('Could not open that debate (missing id).')
+      return
+    }
     setError(null)
     setPastRunsError(null)
     const mockDetail = getMockDebateDetail(debateId)
@@ -286,23 +305,36 @@ export default function App() {
       setSelectedRunId(mockDetail.debate_id)
       setQuestion(mockDetail.question ?? '')
       setLiveRoundsLog(`${PAST_RUN_LIVE_NOTE}${MOCK_LIVE_LOG_SNIPPET}`)
+      setRoundVisualizations(Array.isArray(mockDetail.round_scores) ? mockDetail.round_scores : [])
       applyDebatePayload(mockDetail)
       return
     }
+    // Try server first
     try {
       const res = await fetch(`${API_BASE}/debate/${encodeURIComponent(debateId)}`)
-      if (!res.ok) {
-        const detail = await res.json().catch(() => ({}))
-        throw new Error(detail.detail ?? res.statusText ?? 'Not found')
+      if (res.ok) {
+        const data = await res.json()
+        setSelectedRunId(data.debate_id)
+        setQuestion(data.question ?? '')
+        setLiveRoundsLog(PAST_RUN_LIVE_NOTE)
+        setRoundVisualizations(Array.isArray(data.round_scores) ? data.round_scores : [])
+        applyDebatePayload(data)
+        return
       }
-      const data = await res.json()
-      setSelectedRunId(data.debate_id)
-      setQuestion(data.question ?? '')
-      setLiveRoundsLog(PAST_RUN_LIVE_NOTE)
-      applyDebatePayload(data)
-    } catch (err) {
-      setError(err.message ?? String(err))
+    } catch {
+      // network errors fall through to local cache below
     }
+    // Fallback: local cache (survives orchestrator restarts)
+    const cached = runHistory.find((r) => r.debate_id === debateId)
+    if (cached?.debate) {
+      setSelectedRunId(cached.debate_id)
+      setQuestion(cached.question ?? cached.debate.question ?? '')
+      setLiveRoundsLog(PAST_RUN_LIVE_NOTE)
+      setRoundVisualizations(Array.isArray(cached.round_scores) ? cached.round_scores : [])
+      applyDebatePayload(cached.debate)
+      return
+    }
+    setError('Debate not found on server and no local cache available. Re-run the debate to view it.')
   }
 
   function applyDebatePayload(data) {
@@ -404,6 +436,8 @@ export default function App() {
                     debate_id: ev.debate.debate_id,
                     question: ev.debate.question ?? '',
                     finished_at: new Date().toISOString(),
+                    debate: ev.debate,
+                    round_scores: roundsNow,
                     ...summary,
                   }
                   // Avoid duplicate append if same debate_id already last
@@ -585,18 +619,25 @@ export default function App() {
                     <h3>Past Debates</h3>
                   </div>
                   <div className="runs-scroll">
-                    {displayPastRuns.map((run) => (
-                      <motion.button
-                        key={run.id}
-                        className={`run-card ${selectedRunId === run.id ? 'active' : ''}`}
-                        onClick={() => loadPastRun(run.id)}
-                        whileHover={{ x: 8 }}
-                        transition={{ type: 'spring', stiffness: 300 }}
-                      >
-                        <div className="run-date">{run.created_at}</div>
-                        <div className="run-question">{run.question}</div>
-                      </motion.button>
-                    ))}
+                    {displayPastRuns.map((run) => {
+                      const runId = run.debate_id ?? run.id
+                      const dateLabel = (() => {
+                        const d = new Date(run.created_at)
+                        return Number.isNaN(d.getTime()) ? String(run.created_at ?? '') : d.toLocaleString()
+                      })()
+                      return (
+                        <motion.button
+                          key={runId}
+                          className={`run-card ${selectedRunId === runId ? 'active' : ''}`}
+                          onClick={() => loadPastRun(runId)}
+                          whileHover={{ x: 8 }}
+                          transition={{ type: 'spring', stiffness: 300 }}
+                        >
+                          <div className="run-date">{dateLabel}</div>
+                          <div className="run-question">{run.question}</div>
+                        </motion.button>
+                      )
+                    })}
                   </div>
                 </motion.div>
               )}
