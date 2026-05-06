@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from 'recharts'
+import { Heart, Brain, MessageSquare, TrendingUp, Zap, Trophy, AlertCircle } from 'lucide-react'
 import './App.css'
 import LoginScreen from './LoginScreen.jsx'
 import CreateAgentPage from './CreateAgentPage.jsx'
-import {
-  getMockDebateDetail,
-  mergePastRunSummaries,
-  MOCK_LIVE_LOG_SNIPPET,
-} from './mockPastRuns.js'
+import { getMockDebateDetail, mergePastRunSummaries, MOCK_LIVE_LOG_SNIPPET } from './mockPastRuns.js'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 const SESSION_KEY = 'arguenet_demo_session'
@@ -28,9 +27,7 @@ function loadSession() {
     if (typeof j?.username === 'string' && j.username.trim()) {
       return { username: j.username.trim() }
     }
-  } catch {
-    /* ignore */
-  }
+  } catch {}
   return null
 }
 
@@ -47,9 +44,7 @@ function loadTheme() {
     const raw = localStorage.getItem(THEME_KEY)
     if (!raw) return 'indigo-dark'
     if (THEME_OPTIONS.some((t) => t.value === raw)) return raw
-  } catch {
-    /* ignore */
-  }
+  } catch {}
   return 'indigo-dark'
 }
 
@@ -68,8 +63,7 @@ function loadCustomAgent() {
       persona: typeof parsed.persona === 'string' ? parsed.persona.trim() : '',
       hobbies: typeof parsed.hobbies === 'string' ? parsed.hobbies.trim() : '',
       opinions: typeof parsed.opinions === 'string' ? parsed.opinions.trim() : '',
-      communicationStyle:
-        typeof parsed.communicationStyle === 'string' ? parsed.communicationStyle.trim() : '',
+      communicationStyle: typeof parsed.communicationStyle === 'string' ? parsed.communicationStyle.trim() : '',
     }
   } catch {
     return null
@@ -83,9 +77,7 @@ function saveCustomAgent(agent) {
 const ROLES = ['advocate', 'critic', 'moderator']
 const DEFAULT_MAX_ROUNDS = 6
 const MAX_ROUNDS_LIMIT = 20
-
-const PAST_RUN_LIVE_NOTE =
-  '(Live log is only captured during a stream. This saved run shows the summary and timeline below.)\n\n'
+const PAST_RUN_LIVE_NOTE = '(Live log is only captured during a stream. This saved run shows the summary and timeline below.)\n\n'
 
 function formatRunPillLabel(createdAt, question) {
   let time = createdAt
@@ -99,9 +91,7 @@ function formatRunPillLabel(createdAt, question) {
         minute: '2-digit',
       })
     }
-  } catch {
-    /* keep raw */
-  }
+  } catch {}
   const q = question.length > 44 ? `${question.slice(0, 42)}…` : question
   return `${time} — ${q}`
 }
@@ -227,8 +217,7 @@ export default function App() {
     setLiveRoundsLog('')
 
     const n = parseInt(String(maxRounds).trim(), 10)
-    const rounds =
-      Number.isFinite(n) && n >= 1 ? Math.min(MAX_ROUNDS_LIMIT, Math.max(1, n)) : DEFAULT_MAX_ROUNDS
+    const rounds = Number.isFinite(n) && n >= 1 ? Math.min(MAX_ROUNDS_LIMIT, Math.max(1, n)) : DEFAULT_MAX_ROUNDS
 
     const body = {
       question: question.trim(),
@@ -292,16 +281,7 @@ export default function App() {
     }
   }
 
-  const statusLabel =
-    runStatus === 'ready'
-      ? 'Ready'
-      : runStatus === 'running'
-        ? 'Running'
-        : runStatus === 'completed'
-          ? 'Completed'
-          : runStatus === 'failed'
-            ? 'Failed'
-            : runStatus
+  const statusLabel = runStatus === 'ready' ? 'Ready' : runStatus === 'running' ? 'Running' : runStatus === 'completed' ? 'Completed' : runStatus === 'failed' ? 'Failed' : runStatus
 
   function handleLogin(user) {
     saveSession(user)
@@ -331,249 +311,603 @@ export default function App() {
   return (
     <div className="app-shell">
       <div className="dashboard">
-        <header className="header">
-          <div className="header-row">
-            <div className="brand-lockup">
-              <span className="brand-mark" aria-hidden="true">
+        {/* Modern Header */}
+        <motion.header className="header-modern" initial={{ y: -50 }} animate={{ y: 0 }} transition={{ duration: 0.5 }}>
+          <div className="header-content">
+            <div className="brand-section">
+              <motion.span className="brand-icon" animate={{ rotate: 360 }} transition={{ duration: 3, repeat: Infinity }}>
                 ◈
-              </span>
-              <div className="brand-text">
-                <h1 className="title">ArgueNet</h1>
-                <p className="tagline">Multi-agent debate orchestrator</p>
+              </motion.span>
+              <div>
+                <h1 className="app-title">ArgueNet</h1>
+                <p className="app-subtitle">AI-Powered Multi-Agent Debates</p>
               </div>
             </div>
-            <div className="session-bar">
-              <label className="theme-picker" htmlFor="theme-picker">
-                Theme
-              </label>
-              <select
-                id="theme-picker"
-                className="theme-select"
-                value={theme}
-                onChange={(e) => setTheme(e.target.value)}
-              >
+
+            <div className="header-controls">
+              <select className="theme-selector" value={theme} onChange={(e) => setTheme(e.target.value)}>
                 {THEME_OPTIONS.map((t) => (
                   <option key={t.value} value={t.value}>
                     {t.label}
                   </option>
                 ))}
               </select>
-              <button
-                type="button"
-                className="session-logout"
+              <motion.button 
+                className="button secondary" 
                 onClick={() => setActiveView(activeView === 'dashboard' ? 'create-agent' : 'dashboard')}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
               >
-                {activeView === 'dashboard' ? 'Create agent' : 'Back to debate'}
-              </button>
-              <span className="session-user" title={session.username}>
-                {session.username}
-              </span>
-              <button type="button" className="session-logout" onClick={handleLogout}>
-                Log out
-              </button>
+                {activeView === 'dashboard' ? '🤖 Create Agent' : '← Back'}
+              </motion.button>
+              <span className="user-info">{session.username}</span>
+              <motion.button 
+                className="button" 
+                onClick={handleLogout}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+              >
+                Log Out
+              </motion.button>
             </div>
           </div>
-        </header>
+        </motion.header>
 
         {activeView === 'create-agent' ? (
-          <CreateAgentPage
-            initialAgent={customAgent}
-            onCancel={() => setActiveView('dashboard')}
-            onSave={handleSaveAgent}
-          />
+          <CreateAgentPage initialAgent={customAgent} onCancel={() => setActiveView('dashboard')} onSave={handleSaveAgent} />
         ) : (
-          <div className="dashboard-layout">
-            <div className="dashboard-main">
-              <div className="panel panel-compose">
-                <form className="controls" onSubmit={runDebate}>
-            <label className="label" htmlFor="question">
-              Question
-            </label>
-            <textarea
-              id="question"
-              className="question-input"
-              rows={3}
-              placeholder="Ask the agents something…"
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              disabled={runStatus === 'running'}
-              required
-            />
-            <label className="label" htmlFor="max-rounds">
-              Max debate rounds
-            </label>
-            <input
-              id="max-rounds"
-              className="number-input"
-              type="number"
-              min={1}
-              max={MAX_ROUNDS_LIMIT}
-              step={1}
-              value={maxRounds}
-              onChange={(e) => setMaxRounds(e.target.value)}
-              disabled={runStatus === 'running'}
-              aria-describedby="max-rounds-hint"
-            />
-            <p id="max-rounds-hint" className="field-hint">
-              1–{MAX_ROUNDS_LIMIT} (default {DEFAULT_MAX_ROUNDS}). Passed to the orchestrator as{' '}
-              <code className="inline-code">ARGUENET_MAX_ROUNDS</code> for this run.
-            </p>
-            <label className="label checkbox-row" htmlFor="include-custom-agent">
-              <input
-                id="include-custom-agent"
-                className="checkbox-input"
-                type="checkbox"
-                checked={includeCustomAgent}
-                onChange={(e) => setIncludeCustomAgent(e.target.checked)}
-                disabled={!customAgent || runStatus === 'running'}
-              />
-              Include custom agent in this run
-            </label>
-            {customAgent ? (
-              <div className="custom-agent-chip" title={customAgent.persona}>
-                <span className="custom-agent-chip-title">Custom agent:</span> {customAgent.name}
-              </div>
-            ) : (
-              <p className="field-hint">
-                No custom agent yet. Use <code className="inline-code">Create agent</code> above.
-              </p>
-            )}
-            <label className="label" htmlFor="failure">
-              Optional failure (demo)
-            </label>
-            <select
-              id="failure"
-              className="select"
-              value={failure}
-              onChange={(e) => setFailure(e.target.value)}
-              disabled={runStatus === 'running'}
-            >
-              <option value="none">none</option>
-              <option value="advocate">advocate</option>
-              <option value="critic">critic</option>
-              <option value="moderator">moderator</option>
-            </select>
-                  <button className="submit" type="submit" disabled={runStatus === 'running'}>
-                    {runStatus === 'running' ? 'Running debate…' : 'Run debate'}
-                  </button>
+          <div className="dashboard-grid">
+            {/* Left Column - Form */}
+            <motion.div initial={{ x: -50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ duration: 0.5 }}>
+              <div className="panel debate-form-card">
+                <h2 className="form-title">🎯 Start a Debate</h2>
+                <form className="debate-form" onSubmit={runDebate}>
+                  <div className="form-group">
+                    <label>Question</label>
+                    <textarea
+                      className="question-input textarea"
+                      rows={4}
+                      placeholder="Ask the agents something interesting..."
+                      value={question}
+                      onChange={(e) => setQuestion(e.target.value)}
+                      disabled={runStatus === 'running'}
+                      required
+                    />
+                  </div>
+
+                  <div className="form-row">
+                    <div className="form-group flex-1">
+                      <label>Max Rounds</label>
+                      <input
+                        className="question-input"
+                        type="number"
+                        min={1}
+                        max={MAX_ROUNDS_LIMIT}
+                        value={maxRounds}
+                        onChange={(e) => setMaxRounds(e.target.value)}
+                        disabled={runStatus === 'running'}
+                      />
+                    </div>
+                    <div className="form-group flex-1">
+                      <label>Failure Mode</label>
+                      <select className="question-input" value={failure} onChange={(e) => setFailure(e.target.value)} disabled={runStatus === 'running'}>
+                        <option value="none">None</option>
+                        <option value="advocate">Advocate</option>
+                        <option value="critic">Critic</option>
+                        <option value="moderator">Moderator</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={includeCustomAgent}
+                      onChange={(e) => setIncludeCustomAgent(e.target.checked)}
+                      disabled={!customAgent || runStatus === 'running'}
+                    />
+                    Include custom agent
+                  </label>
+
+                  <motion.button
+                    className="submit primary"
+                    type="submit"
+                    disabled={runStatus === 'running'}
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                  >
+                    {runStatus === 'running' ? '⚡ Running...' : '▶ Start Debate'}
+                  </motion.button>
                 </form>
               </div>
 
-              <section className="bottom panel panel-output" aria-label="Debate output">
-                <div className="output-head">
-                  <h2 className="output-title">Results</h2>
-                  <span className={`status-pill status-pill--${runStatus}`}>{statusLabel}</span>
-                </div>
-                {error ? <p className="error">{error}</p> : null}
-
-          <label className="label" htmlFor="live-rounds">
-            Live rounds
-          </label>
-          <textarea
-            id="live-rounds"
-            ref={liveLogRef}
-            className="live-rounds-log"
-            readOnly
-            rows={10}
-            value={liveRoundsLog}
-            placeholder="Same live text as `python -m arguenet.main` (round headers, phases, rankings, summaries)."
-            aria-live="polite"
-          />
-
-          <h2 className="section-title">Debate timeline</h2>
-          <ol className="timeline">
-            {timelineRoles.map((role) => {
-              const m = messageFor(messages, role)
-              return (
-                <li key={role} className="card card-role">
-                <div className="card-head">{role}</div>
-                {m ? (
-                  <>
-                    <p className="card-body">{m.content}</p>
-                    <div className="meta">
-                      round {m.round} · confidence {m.confidence}
-                    </div>
-                  </>
-                ) : (
-                  <p className="card-muted">No message (skipped or fault injection)</p>
-                )}
-              </li>
-              )
-            })}
-          </ol>
-
-          <div className="card final card-highlight">
-            <div className="card-head">Final answer</div>
-            <p className="card-body">{finalAnswer || '—'}</p>
-          </div>
-
-                <div className="metrics">
-                  <div className="card metric">
-                    <div className="card-head">Agreement score</div>
-                    <p className="card-body mono">
-                      {agreementScore !== null ? agreementScore.toFixed(2) : '—'}
-                    </p>
-                  </div>
-                  <div className="card metric">
-                    <div className="card-head">Failed nodes</div>
-                    <p className="card-body mono">
-                      {failedNodes.length ? failedNodes.join(', ') : '—'}
-                    </p>
-                  </div>
-                </div>
-              </section>
-            </div>
-
-            <aside className="dashboard-side">
-              <nav className="past-runs-nav panel panel-subtle" aria-label="Past debates">
-                <div className="past-runs-head">
-                  <span className="past-runs-title">Past runs</span>
-                  <button type="button" className="nav-refresh" onClick={() => fetchPastRuns()}>
-                    Refresh
-                  </button>
-                </div>
-                {pastRunsError ? <p className="past-runs-error">{pastRunsError}</p> : null}
-                <div className="past-runs-scroll past-runs-scroll-side" role="list">
-                  <button
-                    type="button"
-                    className={`nav-pill${selectedRunId === null ? ' nav-pill-active' : ''}`}
-                    onClick={() => selectNewDraft()}
-                    disabled={runStatus === 'running'}
-                  >
-                    New draft
-                  </button>
-                  {displayPastRuns.map((run) => {
-                    const st = (run.status || '').toLowerCase()
-                    const badge =
-                      st === 'failed' ? 'failed' : st === 'completed' ? 'completed' : 'other'
-                    const isMock = String(run.debate_id).startsWith('mock-')
-                    return (
-                      <button
-                        key={run.debate_id}
-                        type="button"
-                        role="listitem"
-                        className={`nav-pill${selectedRunId === run.debate_id ? ' nav-pill-active' : ''}${
-                          isMock ? ' nav-pill-mock' : ''
-                        }`}
-                        title={isMock ? `${run.question ?? ''} (demo mock)` : run.question ?? ''}
-                        onClick={() => loadPastRun(run.debate_id)}
-                        disabled={runStatus === 'running'}
+              {/* Past Runs */}
+              {displayPastRuns.length > 0 && (
+                <motion.div className="panel past-runs-card" initial={{ y: 50, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.2 }}>
+                  <h3 className="section-title">📜 Past Debates</h3>
+                  <div className="runs-list">
+                    {displayPastRuns.map((run) => (
+                      <motion.button
+                        key={run.id}
+                        className={`run-pill ${selectedRunId === run.id ? 'active' : ''}`}
+                        onClick={() => loadPastRun(run.id)}
+                        whileHover={{ x: 5 }}
                       >
-                        {isMock ? <span className="nav-pill-demo-badge">Demo</span> : null}
-                        <span className={`nav-pill-status nav-pill-status-${badge}`}>{run.status}</span>
-                        {formatRunPillLabel(run.created_at, run.question ?? '')}
-                      </button>
-                    )
-                  })}
+                        <div className="run-time">{run.created_at}</div>
+                        <div className="run-question">{run.question}</div>
+                      </motion.button>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+            </motion.div>
+
+            {/* Right Column - Results & Visualizations */}
+            <motion.div initial={{ x: 50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ duration: 0.5 }}>
+              <div className="panel results-card">
+                <div className="results-header">
+                  <h2 className="results-title">📊 Results</h2>
+                  <motion.span className={`status-badge ${runStatus}`} animate={runStatus === 'running' ? { opacity: [1, 0.5, 1] } : {}} transition={{ duration: 1.5, repeat: Infinity }}>
+                    {statusLabel}
+                  </motion.span>
                 </div>
-                {displayPastRuns.length === 0 && !pastRunsError ? (
-                  <p className="past-runs-empty">No saved runs yet — run a debate to populate this list.</p>
-                ) : null}
-              </nav>
-            </aside>
+
+                {error && (
+                  <motion.div className="error-box" initial={{ y: -10 }} animate={{ y: 0 }}>
+                    <AlertCircle size={16} />
+                    {error}
+                  </motion.div>
+                )}
+
+                {/* Key Metrics */}
+                {(agreementScore !== null || finalAnswer) && (
+                  <motion.div className="metrics-grid" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 }}>
+                    {agreementScore !== null && (
+                      <motion.div className="metric-card" whileHover={{ y: -5 }}>
+                        <Trophy size={20} />
+                        <div className="metric-value">{(agreementScore * 100).toFixed(1)}%</div>
+                        <div className="metric-label">Agreement</div>
+                      </motion.div>
+                    )}
+                    {messages.length > 0 && (
+                      <motion.div className="metric-card" whileHover={{ y: -5 }}>
+                        <MessageSquare size={20} />
+                        <div className="metric-value">{messages.length}</div>
+                        <div className="metric-label">Messages</div>
+                      </motion.div>
+                    )}
+                    <motion.div className="metric-card" whileHover={{ y: -5 }}>
+                      <Zap size={20} />
+                      <div className="metric-value">{maxRounds}</div>
+                      <div className="metric-label">Max Rounds</div>
+                    </motion.div>
+                  </motion.div>
+                )}
+
+                {/* Live Log */}
+                {liveRoundsLog && (
+                  <motion.div className="live-log-section" initial={{ height: 0 }} animate={{ height: 'auto' }} transition={{ duration: 0.3 }}>
+                    <label className="log-label">🔴 Live Activity</label>
+                    <div className="live-log" ref={liveLogRef}>
+                      {liveRoundsLog}
+                    </div>
+                  </motion.div>
+                )}
+
+                {/* Timeline */}
+                {messages.length > 0 && (
+                  <motion.div className="timeline-section" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
+                    <h3 className="timeline-title">💬 Debate Timeline</h3>
+                    <div className="timeline">
+                      {timelineRoles.map((role, idx) => {
+                        const m = messageFor(messages, role)
+                        return (
+                          <motion.div
+                            key={role}
+                            className="timeline-item"
+                            initial={{ x: -20, opacity: 0 }}
+                            animate={{ x: 0, opacity: 1 }}
+                            transition={{ delay: idx * 0.1 }}
+                          >
+                            <div className="timeline-marker">{idx + 1}</div>
+                            <div className="timeline-content">
+                              <h4>{role}</h4>
+                              <p>{m ? m.content : 'No message'}</p>
+                              {m && <span className="meta">Round {m.round} • Confidence: {m.confidence}</span>}
+                            </div>
+                          </motion.div>
+                        )
+                      })}
+                    </div>
+                  </motion.div>
+                )}
+
+                {finalAnswer && (
+                  <motion.div className="final-answer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.5 }}>
+                    <h4>🎯 Final Answer</h4>
+                    <p>{finalAnswer}</p>
+                  </motion.div>
+                )}
+              </div>
+            </motion.div>
           </div>
         )}
       </div>
+
+      <style jsx>{`
+        .header-modern {
+          margin-bottom: 40px;
+          animation: slide-down 0.5s ease-out;
+        }
+
+        .header-content {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 20px;
+          flex-wrap: wrap;
+        }
+
+        .brand-section {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+
+        .brand-icon {
+          font-size: 32px;
+          color: var(--primary);
+        }
+
+        .app-title {
+          font-size: 28px;
+          font-weight: 700;
+          background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
+          margin: 0;
+        }
+
+        .app-subtitle {
+          font-size: 12px;
+          color: var(--text-tertiary);
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          margin: 4px 0 0 0;
+        }
+
+        .header-controls {
+          display: flex;
+          gap: 12px;
+          align-items: center;
+        }
+
+        .user-info {
+          font-size: 14px;
+          color: var(--text-secondary);
+          font-weight: 600;
+        }
+
+        .dashboard-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 24px;
+          max-width: 1400px;
+          margin: 0 auto;
+        }
+
+        @media (max-width: 1024px) {
+          .dashboard-grid {
+            grid-template-columns: 1fr;
+          }
+        }
+
+        .debate-form-card {
+          padding: 24px;
+        }
+
+        .form-title {
+          font-size: 18px;
+          font-weight: 600;
+          margin-bottom: 20px;
+          color: var(--text-primary);
+        }
+
+        .debate-form {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }
+
+        .form-row {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 12px;
+        }
+
+        .form-group {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+
+        .form-group label {
+          font-size: 12px;
+          font-weight: 600;
+          text-transform: uppercase;
+          color: var(--text-secondary);
+        }
+
+        .checkbox-label {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          cursor: pointer;
+          font-size: 14px;
+          color: var(--text-secondary);
+        }
+
+        .past-runs-card {
+          margin-top: 20px;
+        }
+
+        .section-title {
+          font-size: 14px;
+          font-weight: 600;
+          margin-bottom: 12px;
+          text-transform: uppercase;
+          color: var(--text-secondary);
+        }
+
+        .runs-list {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        .run-pill {
+          padding: 12px;
+          background: rgba(99, 102, 241, 0.1);
+          border: 1px solid var(--border-color);
+          border-radius: 8px;
+          cursor: pointer;
+          transition: var(--transition);
+          text-align: left;
+        }
+
+        .run-pill:hover {
+          border-color: var(--primary);
+          background: rgba(99, 102, 241, 0.15);
+        }
+
+        .run-pill.active {
+          border-color: var(--primary);
+          background: rgba(99, 102, 241, 0.2);
+        }
+
+        .run-time {
+          font-size: 11px;
+          color: var(--text-tertiary);
+        }
+
+        .run-question {
+          font-size: 13px;
+          color: var(--text-secondary);
+          margin-top: 4px;
+        }
+
+        .results-card {
+          padding: 24px;
+        }
+
+        .results-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 20px;
+          padding-bottom: 12px;
+          border-bottom: 1px solid var(--border-color);
+        }
+
+        .results-title {
+          font-size: 18px;
+          font-weight: 600;
+          margin: 0;
+        }
+
+        .status-badge {
+          padding: 6px 12px;
+          border-radius: 20px;
+          font-size: 12px;
+          font-weight: 600;
+          text-transform: uppercase;
+        }
+
+        .status-badge.ready {
+          background: rgba(107, 114, 128, 0.2);
+          color: #9ca3af;
+        }
+
+        .status-badge.running {
+          background: rgba(59, 130, 246, 0.2);
+          color: #3b82f6;
+        }
+
+        .status-badge.completed {
+          background: rgba(16, 185, 129, 0.2);
+          color: #10b981;
+        }
+
+        .status-badge.failed {
+          background: rgba(239, 68, 68, 0.2);
+          color: #ef4444;
+        }
+
+        .error-box {
+          padding: 12px;
+          background: rgba(239, 68, 68, 0.1);
+          border: 1px solid rgba(239, 68, 68, 0.3);
+          border-radius: 8px;
+          color: #fca5a5;
+          display: flex;
+          gap: 8px;
+          align-items: center;
+          font-size: 13px;
+          margin-bottom: 16px;
+        }
+
+        .metrics-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+          gap: 12px;
+          margin-bottom: 20px;
+        }
+
+        .metric-card {
+          padding: 16px;
+          background: rgba(99, 102, 241, 0.1);
+          border: 1px solid var(--primary);
+          border-radius: 8px;
+          text-align: center;
+          transition: var(--transition);
+        }
+
+        .metric-card:hover {
+          border-color: var(--secondary);
+          background: rgba(236, 72, 153, 0.1);
+        }
+
+        .metric-value {
+          font-size: 20px;
+          font-weight: 700;
+          color: var(--primary);
+          margin: 8px 0;
+        }
+
+        .metric-label {
+          font-size: 11px;
+          color: var(--text-tertiary);
+          text-transform: uppercase;
+        }
+
+        .live-log-section {
+          margin-bottom: 20px;
+          overflow: hidden;
+        }
+
+        .log-label {
+          font-size: 12px;
+          font-weight: 600;
+          text-transform: uppercase;
+          color: var(--text-secondary);
+          display: block;
+          margin-bottom: 8px;
+        }
+
+        .live-log {
+          background: rgba(15, 23, 42, 0.8);
+          border: 1px solid var(--border-color);
+          border-radius: 8px;
+          padding: 12px;
+          height: 200px;
+          overflow-y: auto;
+          font-family: 'Courier New', monospace;
+          font-size: 11px;
+          color: var(--text-secondary);
+          line-height: 1.6;
+        }
+
+        .timeline-section {
+          margin-top: 20px;
+        }
+
+        .timeline-title {
+          font-size: 14px;
+          font-weight: 600;
+          margin-bottom: 12px;
+        }
+
+        .timeline {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
+
+        .timeline-item {
+          display: flex;
+          gap: 12px;
+          padding: 12px;
+          background: rgba(99, 102, 241, 0.05);
+          border-left: 3px solid var(--primary);
+          border-radius: 4px;
+        }
+
+        .timeline-marker {
+          min-width: 24px;
+          height: 24px;
+          background: var(--primary);
+          color: white;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 12px;
+          font-weight: 700;
+        }
+
+        .timeline-content h4 {
+          margin: 0 0 4px 0;
+          font-size: 13px;
+          text-transform: uppercase;
+          color: var(--primary);
+        }
+
+        .timeline-content p {
+          margin: 0;
+          font-size: 12px;
+          color: var(--text-secondary);
+        }
+
+        .meta {
+          font-size: 11px;
+          color: var(--text-tertiary);
+          display: block;
+          margin-top: 4px;
+        }
+
+        .final-answer {
+          margin-top: 20px;
+          padding: 16px;
+          background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(99, 102, 241, 0.1));
+          border: 1px solid var(--primary);
+          border-radius: 8px;
+        }
+
+        .final-answer h4 {
+          margin: 0 0 8px 0;
+          font-size: 13px;
+          color: var(--success);
+        }
+
+        .final-answer p {
+          margin: 0;
+          font-size: 13px;
+          color: var(--text-secondary);
+          line-height: 1.5;
+        }
+
+        @keyframes slide-down {
+          from {
+            opacity: 0;
+            transform: translateY(-20px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+      `}</style>
     </div>
   )
 }
