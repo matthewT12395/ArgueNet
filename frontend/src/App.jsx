@@ -1,19 +1,79 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { motion } from 'framer-motion'
+import { Trophy, AlertCircle, Activity, Lightbulb } from 'lucide-react'
 import './App.css'
 import LoginScreen from './LoginScreen.jsx'
 import CreateAgentPage from './CreateAgentPage.jsx'
-import FriendsPage from './FriendsPage.jsx'
 import {
-  getMockDebateDetail,
-  mergePastRunSummaries,
-  MOCK_LIVE_LOG_SNIPPET,
-} from './mockPastRuns.js'
+  RoundVisualization,
+  FinalWinnerDisplay,
+  MultiRoundPerformance,
+  LiveProgressStrip,
+  RunHistoryChart,
+  RoundWinnersTimeline,
+} from './RoundVisualization.jsx'
+import { getMockDebateDetail, mergePastRunSummaries, MOCK_LIVE_LOG_SNIPPET } from './mockPastRuns.js'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 const SESSION_KEY = 'arguenet_demo_session'
 const CUSTOM_AGENT_KEY = 'arguenet_custom_agent'
-const FRIENDS_KEY = 'arguenet_friends'
 const THEME_KEY = 'arguenet_theme'
+const RUN_HISTORY_KEY = 'arguenet_run_history'
+const RUN_HISTORY_MAX = 20
+
+function loadRunHistory() {
+  try {
+    const raw = localStorage.getItem(RUN_HISTORY_KEY)
+    if (!raw) return []
+    const arr = JSON.parse(raw)
+    return Array.isArray(arr) ? arr : []
+  } catch {
+    return []
+  }
+}
+
+function saveRunHistory(history) {
+  try {
+    localStorage.setItem(RUN_HISTORY_KEY, JSON.stringify(history.slice(-RUN_HISTORY_MAX)))
+  } catch {}
+}
+
+function summarizeRoundsForHistory(rounds) {
+  if (!rounds || rounds.length === 0) return null
+  const totals = {}
+  let topWinner = null
+  let topWinnerCount = 0
+  const winCounts = {}
+  rounds.forEach((r) => {
+    Object.entries(r.all_scores || {}).forEach(([agent, score]) => {
+      if (typeof score !== 'number') return
+      if (!totals[agent]) totals[agent] = { sum: 0, count: 0 }
+      totals[agent].sum += score
+      totals[agent].count += 1
+    })
+    if (r.winner) {
+      winCounts[r.winner] = (winCounts[r.winner] || 0) + 1
+      if (winCounts[r.winner] > topWinnerCount) {
+        topWinnerCount = winCounts[r.winner]
+        topWinner = r.winner
+      }
+    }
+  })
+  const agentAverages = {}
+  Object.entries(totals).forEach(([agent, { sum, count }]) => {
+    agentAverages[agent] = count ? sum / count : 0
+  })
+  // overall winner = highest average
+  let overall = null
+  let bestAvg = -Infinity
+  Object.entries(agentAverages).forEach(([agent, avg]) => {
+    if (avg > bestAvg) {
+      bestAvg = avg
+      overall = agent
+    }
+  })
+  return { agentAverages, winner: overall ?? topWinner, roundsCount: rounds.length }
+}
 
 const THEME_OPTIONS = [
   { value: 'indigo-dark', label: 'Dark Indigo' },
@@ -30,9 +90,7 @@ function loadSession() {
     if (typeof j?.username === 'string' && j.username.trim()) {
       return { username: j.username.trim() }
     }
-  } catch {
-    /* ignore */
-  }
+  } catch {}
   return null
 }
 
@@ -49,9 +107,7 @@ function loadTheme() {
     const raw = localStorage.getItem(THEME_KEY)
     if (!raw) return 'indigo-dark'
     if (THEME_OPTIONS.some((t) => t.value === raw)) return raw
-  } catch {
-    /* ignore */
-  }
+  } catch {}
   return 'indigo-dark'
 }
 
@@ -70,8 +126,7 @@ function loadCustomAgent() {
       persona: typeof parsed.persona === 'string' ? parsed.persona.trim() : '',
       hobbies: typeof parsed.hobbies === 'string' ? parsed.hobbies.trim() : '',
       opinions: typeof parsed.opinions === 'string' ? parsed.opinions.trim() : '',
-      communicationStyle:
-        typeof parsed.communicationStyle === 'string' ? parsed.communicationStyle.trim() : '',
+      communicationStyle: typeof parsed.communicationStyle === 'string' ? parsed.communicationStyle.trim() : '',
     }
   } catch {
     return null
@@ -82,54 +137,71 @@ function saveCustomAgent(agent) {
   localStorage.setItem(CUSTOM_AGENT_KEY, JSON.stringify(agent))
 }
 
-function loadFriends() {
-  try {
-    const raw = localStorage.getItem(FRIENDS_KEY)
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter((f) => f && typeof f.id === 'string' && typeof f.name === 'string')
-  } catch {
-    return []
-  }
-}
-
-function saveFriends(friends) {
-  localStorage.setItem(FRIENDS_KEY, JSON.stringify(friends))
-}
-
 const ROLES = ['advocate', 'critic', 'moderator']
-const DEFAULT_MAX_ROUNDS = 6
+const DEFAULT_MAX_ROUNDS = 5
 const MAX_ROUNDS_LIMIT = 20
-const EXAMPLE_AGENT_OPTIONS = [
-  { id: 'policy_hawk', label: 'Policy Hawk' },
-  { id: 'startup_founder', label: 'Startup Founder' },
-]
-
-const PAST_RUN_LIVE_NOTE =
-  '(Live log is only captured during a stream. This saved run shows the summary and timeline below.)\n\n'
-
-function formatRunPillLabel(createdAt, question) {
-  let time = createdAt
-  try {
-    const d = new Date(createdAt)
-    if (!Number.isNaN(d.getTime())) {
-      time = d.toLocaleString(undefined, {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-    }
-  } catch {
-    /* keep raw */
-  }
-  const q = question.length > 44 ? `${question.slice(0, 42)}…` : question
-  return `${time} — ${q}`
-}
+const PAST_RUN_LIVE_NOTE = '(Live log captured during debate stream)\n\n'
 
 function messageFor(messages, role) {
   return messages.find((m) => m.sender === role) ?? null
+}
+
+// Try to extract a clean prose consensus from whatever the backend returned.
+// Many runs put a fenced JSON debate-state blob in final_answer; we surface
+// the most useful field (claim / final_answer / answer / summary) and hide
+// the raw payload behind a toggle.
+function extractCleanAnswer(text) {
+  if (!text || typeof text !== 'string') return { clean: '', raw: '' }
+  const raw = text.trim()
+
+  // Strip ```json ... ``` fences if present
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  const candidate = fenced ? fenced[1].trim() : raw
+
+  // Try to JSON-parse
+  try {
+    const parsed = JSON.parse(candidate)
+    const pickFromObj = (obj) => {
+      if (!obj || typeof obj !== 'object') return null
+      const keys = ['final_answer', 'answer', 'claim', 'summary', 'conclusion']
+      for (const k of keys) {
+        const v = obj[k]
+        if (typeof v === 'string' && v.trim()) return v.trim()
+      }
+      return null
+    }
+    let found = pickFromObj(parsed)
+    if (!found && Array.isArray(parsed?.history)) {
+      // Walk history for the latest entry with a claim/argument
+      for (let i = parsed.history.length - 1; i >= 0 && !found; i--) {
+        const item = parsed.history[i]
+        const arg = item?.argument
+        if (typeof arg === 'string') {
+          // arg may itself be a JSON string
+          try {
+            const argObj = JSON.parse(arg)
+            found = pickFromObj(argObj)
+          } catch {
+            if (arg.trim()) found = arg.trim()
+          }
+        }
+      }
+    }
+    if (found) return { clean: found, raw }
+  } catch {
+    // not JSON
+  }
+
+  // Heuristic: if it starts with `{` or has many braces, treat it as a blob
+  const looksLikeJson = /^[{\[]/.test(raw) || (raw.match(/[{}]/g) || []).length > 10
+  if (looksLikeJson) {
+    return {
+      clean: 'No clear prose answer was produced. The full debate state is available below.',
+      raw,
+    }
+  }
+
+  return { clean: raw, raw: '' }
 }
 
 export default function App() {
@@ -145,11 +217,10 @@ export default function App() {
   const [finalAnswer, setFinalAnswer] = useState('')
   const [agreementScore, setAgreementScore] = useState(null)
   const [failedNodes, setFailedNodes] = useState([])
-  const [participants, setParticipants] = useState([])
-  const [selectedExampleAgents, setSelectedExampleAgents] = useState([])
-  const [friends, setFriends] = useState(() => loadFriends())
-  const [selectedFriendIds, setSelectedFriendIds] = useState(new Set())
   const [liveRoundsLog, setLiveRoundsLog] = useState('')
+  const [currentRound, setCurrentRound] = useState(0)
+  const [roundVisualizations, setRoundVisualizations] = useState([])
+  const [runHistory, setRunHistory] = useState(() => loadRunHistory())
   const liveLogRef = useRef(null)
   const [pastRuns, setPastRuns] = useState([])
   const [selectedRunId, setSelectedRunId] = useState(null)
@@ -202,9 +273,9 @@ export default function App() {
     setFinalAnswer('')
     setAgreementScore(null)
     setFailedNodes([])
-    setParticipants([])
-    setSelectedFriendIds(new Set())
     setLiveRoundsLog('')
+    setCurrentRound(0)
+    setRoundVisualizations([])
   }
 
   async function loadPastRun(debateId) {
@@ -239,37 +310,8 @@ export default function App() {
     setFinalAnswer(data.final_answer ?? '')
     setAgreementScore(typeof data.agreement_score === 'number' ? data.agreement_score : null)
     setFailedNodes(data.failed_nodes ?? [])
-    if (Array.isArray(data.participants) && data.participants.length) {
-      setParticipants(data.participants)
-    } else {
-      setParticipants(data.messages ?? [])
-    }
     const s = (data.status ?? '').toLowerCase()
     setRunStatus(s === 'completed' ? 'completed' : s === 'failed' ? 'failed' : 'completed')
-  }
-
-  function toggleFriendSelection(id) {
-    setSelectedFriendIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-
-  function handleSaveFriends(updatedFriends) {
-    setFriends(updatedFriends)
-    saveFriends(updatedFriends)
-    setSelectedFriendIds((prev) => {
-      const validIds = new Set(updatedFriends.map((f) => f.id))
-      return new Set([...prev].filter((id) => validIds.has(id)))
-    })
-  }
-
-  function toggleExampleAgent(id) {
-    setSelectedExampleAgents((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
-    )
   }
 
   async function runDebate(e) {
@@ -281,43 +323,19 @@ export default function App() {
     setFinalAnswer('')
     setAgreementScore(null)
     setFailedNodes([])
-    setParticipants([])
     setLiveRoundsLog('')
+    setCurrentRound(0)
+    setRoundVisualizations([])
 
     const n = parseInt(String(maxRounds).trim(), 10)
-    const rounds =
-      Number.isFinite(n) && n >= 1 ? Math.min(MAX_ROUNDS_LIMIT, Math.max(1, n)) : DEFAULT_MAX_ROUNDS
-
-    const personalAgents = friends
-      .filter((f) => selectedFriendIds.has(f.id))
-      .map((f) => ({
-        name: f.name.trim(),
-        background: f.background.trim(),
-        hobbies: f.hobbies.trim(),
-        interests: f.interests.trim(),
-        beliefs: f.beliefs.trim(),
-      }))
-
-    const personalAgent =
-      customAgent && includeCustomAgent
-        ? {
-            name: customAgent.name.trim(),
-            background: customAgent.persona.trim(),
-            hobbies: customAgent.hobbies.trim(),
-            interests: '',
-            beliefs: customAgent.opinions.trim(),
-            communication_style: customAgent.communicationStyle.trim(),
-          }
-        : null
+    const rounds = Number.isFinite(n) && n >= 1 ? Math.min(MAX_ROUNDS_LIMIT, Math.max(1, n)) : DEFAULT_MAX_ROUNDS
 
     const body = {
       question: question.trim(),
       simulate_failure: failure !== 'none',
       failed_node: failure === 'none' ? null : failure,
       max_rounds: rounds,
-      personal_agent: personalAgent,
-      personal_agents: personalAgents,
-      selected_example_agents: selectedExampleAgents,
+      custom_agent: customAgent && includeCustomAgent ? customAgent : null,
     }
 
     try {
@@ -348,13 +366,59 @@ export default function App() {
           try {
             ev = JSON.parse(line)
           } catch {
+            console.warn('[stream] non-JSON line:', line)
             continue
           }
+          // Debug: log every stream event received from backend
+          console.log('[stream]', ev.event, ev)
           if (ev.event === 'log' && typeof ev.text === 'string') {
-            setLiveRoundsLog((prev) => prev + ev.text)
+            // Don't render raw text in UI — only use it to track current round.
+            const roundMatch = ev.text.match(/ROUND (\d+)/)
+            if (roundMatch) setCurrentRound(parseInt(roundMatch[1], 10))
+          } else if ((ev.event === 'round' && ev.round_data) || ev.event === 'round_complete') {
+            // Support both nested ({round_data: {...}}) and flat ({round, winner, ...}) shapes
+            const roundData = ev.round_data ?? {
+              round: ev.round,
+              winner: ev.winner,
+              winner_score: ev.winner_score,
+              all_scores: ev.all_scores,
+              all_arguments: ev.all_arguments,
+              fact_checks: ev.fact_checks,
+              summary: ev.summary,
+              key_insights: ev.key_insights,
+              feedback_for_agents: ev.feedback_for_agents,
+            }
+            console.log('[stream] round visualization data:', roundData)
+            setRoundVisualizations((prev) => [...prev, roundData])
+            if (roundData.round) setCurrentRound(roundData.round)
           } else if (ev.event === 'result' && ev.debate) {
             applyDebatePayload(ev.debate)
             if (ev.debate.debate_id) setSelectedRunId(ev.debate.debate_id)
+            setRunStatus('completed')
+            // Snapshot this completed run into history for cross-run comparison.
+            setRoundVisualizations((roundsNow) => {
+              const summary = summarizeRoundsForHistory(roundsNow)
+              if (summary && Object.keys(summary.agentAverages).length > 0) {
+                setRunHistory((prev) => {
+                  const entry = {
+                    debate_id: ev.debate.debate_id,
+                    question: ev.debate.question ?? '',
+                    finished_at: new Date().toISOString(),
+                    ...summary,
+                  }
+                  // Avoid duplicate append if same debate_id already last
+                  if (prev.length && prev[prev.length - 1]?.debate_id === entry.debate_id) {
+                    const replaced = [...prev.slice(0, -1), entry]
+                    saveRunHistory(replaced)
+                    return replaced
+                  }
+                  const next = [...prev, entry]
+                  saveRunHistory(next)
+                  return next
+                })
+              }
+              return roundsNow
+            })
             fetchPastRuns()
           } else if (ev.event === 'error') {
             setError(ev.detail ?? 'Debate failed')
@@ -370,20 +434,15 @@ export default function App() {
     } catch (err) {
       setError(err.message ?? String(err))
       setRunStatus('failed')
-      setLiveRoundsLog((prev) => prev + `\n\n(stream error: ${err.message ?? err})`)
     }
   }
 
-  const statusLabel =
-    runStatus === 'ready'
-      ? 'Ready'
-      : runStatus === 'running'
-        ? 'Running'
-        : runStatus === 'completed'
-          ? 'Completed'
-          : runStatus === 'failed'
-            ? 'Failed'
-            : runStatus
+  const statusLabel = 
+    runStatus === 'ready' ? 'Ready' : 
+    runStatus === 'running' ? 'Running' : 
+    runStatus === 'completed' ? 'Completed' : 
+    runStatus === 'failed' ? 'Failed' : 
+    runStatus
 
   function handleLogin(user) {
     saveSession(user)
@@ -412,357 +471,295 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <div className="dashboard">
-        <header className="header">
-          <div className="header-row">
-            <div className="brand-lockup">
-              <span className="brand-mark" aria-hidden="true">
-                ◈
-              </span>
-              <div className="brand-text">
-                <h1 className="title">ArgueNet</h1>
-                <p className="tagline">Multi-agent debate orchestrator</p>
-              </div>
-            </div>
-            <div className="session-bar">
-              <label className="theme-picker" htmlFor="theme-picker">
-                Theme
-              </label>
-              <select
-                id="theme-picker"
-                className="theme-select"
-                value={theme}
-                onChange={(e) => setTheme(e.target.value)}
-              >
-                {THEME_OPTIONS.map((t) => (
-                  <option key={t.value} value={t.value}>
-                    {t.label}
-                  </option>
-                ))}
-              </select>
-              {activeView !== 'dashboard' ? (
-                <button
-                  type="button"
-                  className="session-logout"
-                  onClick={() => setActiveView('dashboard')}
-                >
-                  ← Dashboard
-                </button>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    className="session-logout"
-                    onClick={() => setActiveView('create-agent')}
-                  >
-                    Create agent
-                  </button>
-                  <button
-                    type="button"
-                    className="session-logout"
-                    onClick={() => setActiveView('friends')}
-                  >
-                    Friends
-                  </button>
-                </>
-              )}
-              <span className="session-user" title={session.username}>
-                {session.username}
-              </span>
-              <button type="button" className="session-logout" onClick={handleLogout}>
-                Log out
-              </button>
+      {/* Premium Header */}
+      <motion.header className="premium-header" initial={{ y: -60 }} animate={{ y: 0 }} transition={{ duration: 0.6 }}>
+        <div className="header-wrapper">
+          <div className="brand-premium">
+            <motion.span className="brand-icon-premium" animate={{ rotate: 360 }} transition={{ duration: 4, repeat: Infinity, ease: 'linear' }}>
+              ◈
+            </motion.span>
+            <div className="brand-info">
+              <h1>ArgueNet</h1>
+              <p>🚀 AI-Powered Multi-Agent Debate Platform</p>
             </div>
           </div>
-        </header>
 
-        {activeView === 'create-agent' ? (
-          <CreateAgentPage
-            initialAgent={customAgent}
-            onCancel={() => setActiveView('dashboard')}
-            onSave={handleSaveAgent}
-          />
-        ) : activeView === 'friends' ? (
-          <FriendsPage
-            friends={friends}
-            onSave={handleSaveFriends}
-            onBack={() => setActiveView('dashboard')}
-          />
-        ) : (
-          <div className="dashboard-layout">
-            <div className="dashboard-main">
-              <div className="panel panel-compose">
-                <form className="controls" onSubmit={runDebate}>
-            <label className="label" htmlFor="question">
-              Question
-            </label>
-            <textarea
-              id="question"
-              className="question-input"
-              rows={3}
-              placeholder="Ask the agents something…"
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              disabled={runStatus === 'running'}
-              required
-            />
-            <label className="label" htmlFor="max-rounds">
-              Max debate rounds
-            </label>
-            <input
-              id="max-rounds"
-              className="number-input"
-              type="number"
-              min={1}
-              max={MAX_ROUNDS_LIMIT}
-              step={1}
-              value={maxRounds}
-              onChange={(e) => setMaxRounds(e.target.value)}
-              disabled={runStatus === 'running'}
-              aria-describedby="max-rounds-hint"
-            />
-            <p id="max-rounds-hint" className="field-hint">
-              1–{MAX_ROUNDS_LIMIT} (default {DEFAULT_MAX_ROUNDS}). Passed to the orchestrator as{' '}
-              <code className="inline-code">ARGUENET_MAX_ROUNDS</code> for this run.
-            </p>
-            <label className="label checkbox-row" htmlFor="include-custom-agent">
-              <input
-                id="include-custom-agent"
-                className="checkbox-input"
-                type="checkbox"
-                checked={includeCustomAgent}
-                onChange={(e) => setIncludeCustomAgent(e.target.checked)}
-                disabled={!customAgent || runStatus === 'running'}
-              />
-              Include custom agent in this run
-            </label>
-            {customAgent ? (
-              <div className="custom-agent-chip" title={customAgent.persona}>
-                <span className="custom-agent-chip-title">Custom agent:</span> {customAgent.name}
-              </div>
-            ) : (
-              <p className="field-hint">
-                No custom agent yet. Use <code className="inline-code">Create agent</code> above.
-              </p>
-            )}
-            <label className="label" htmlFor="failure">
-              Optional failure (demo)
-            </label>
-            <select
-              id="failure"
-              className="select"
-              value={failure}
-              onChange={(e) => setFailure(e.target.value)}
-              disabled={runStatus === 'running'}
-            >
-              <option value="none">none</option>
-              <option value="advocate">advocate</option>
-              <option value="critic">critic</option>
-              <option value="moderator">moderator</option>
-            </select>
-
-            <label className="label">Example agents (optional)</label>
-            <div className="meta" style={{ gap: '0.75rem', flexWrap: 'wrap' }}>
-              {EXAMPLE_AGENT_OPTIONS.map((opt) => (
-                <label key={opt.id} className="meta">
-                  <input
-                    type="checkbox"
-                    checked={selectedExampleAgents.includes(opt.id)}
-                    onChange={() => toggleExampleAgent(opt.id)}
-                    disabled={runStatus === 'running'}
-                  />
-                  {opt.label}
-                </label>
+          <div className="header-actions">
+            <select className="theme-selector-premium" value={theme} onChange={(e) => setTheme(e.target.value)}>
+              {THEME_OPTIONS.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
               ))}
+            </select>
+            <motion.button 
+              className="btn-secondary" 
+              onClick={() => setActiveView(activeView === 'dashboard' ? 'create-agent' : 'dashboard')}
+              whileHover={{ scale: 1.05, y: -2 }}
+              whileTap={{ scale: 0.95 }}
+            >
+              {activeView === 'dashboard' ? '🤖 Create Agent' : '← Back'}
+            </motion.button>
+            <div className="user-badge">
+              <span className="user-avatar">👤</span>
+              <span className="user-name">{session.username}</span>
             </div>
-
-            <label className="label">Friends (optional)</label>
-            {friends.length === 0 ? (
-              <p className="field-hint">
-                No friends saved.{' '}
-                <button
-                  type="button"
-                  className="link-btn"
-                  onClick={() => setActiveView('friends')}
-                  disabled={runStatus === 'running'}
-                >
-                  Manage friends →
-                </button>
-              </p>
-            ) : (
-              <div className="friend-chips">
-                {friends.map((f) => (
-                  <label
-                    key={f.id}
-                    className={`friend-chip${selectedFriendIds.has(f.id) ? ' friend-chip--selected' : ''}`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedFriendIds.has(f.id)}
-                      onChange={() => toggleFriendSelection(f.id)}
-                      disabled={runStatus === 'running'}
-                    />
-                    <span className="friend-chip-avatar">{f.name[0].toUpperCase()}</span>
-                    {f.name}
-                  </label>
-                ))}
-                <button
-                  type="button"
-                  className="link-btn"
-                  onClick={() => setActiveView('friends')}
-                  disabled={runStatus === 'running'}
-                  style={{ alignSelf: 'center', marginLeft: 'auto' }}
-                >
-                  Edit →
-                </button>
-              </div>
-            )}
-
-            <button className="submit" type="submit" disabled={runStatus === 'running'}>
-              {runStatus === 'running' ? 'Running debate…' : 'Run debate'}
-            </button>
-          </form>
+            <motion.button 
+              className="btn-logout" 
+              onClick={handleLogout}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+            >
+              Log Out
+            </motion.button>
+          </div>
         </div>
+      </motion.header>
 
-        <section className="bottom panel panel-output" aria-label="Debate output">
-          <div className="output-head">
-            <h2 className="output-title">Results</h2>
-            <span className={`status-pill status-pill--${runStatus}`}>{statusLabel}</span>
-          </div>
-          {error ? <p className="error">{error}</p> : null}
-
-          <label className="label" htmlFor="live-rounds">
-            Live rounds
-          </label>
-          <textarea
-            id="live-rounds"
-            ref={liveLogRef}
-            className="live-rounds-log"
-            readOnly
-            rows={10}
-            value={liveRoundsLog}
-            placeholder="Same live text as `python -m arguenet.main` (round headers, phases, rankings, summaries)."
-            aria-live="polite"
-          />
-
-          <h2 className="section-title">Debate timeline</h2>
-          <ol className="timeline">
-            {timelineRoles.map((role) => {
-              const m = messageFor(messages, role) ?? (
-                customAgent && role === customAgent.name
-                  ? participants.find(
-                      (p) =>
-                        p.sender ===
-                        'friend_' +
-                          role
-                            .trim()
-                            .toLowerCase()
-                            .replace(/[^a-z0-9]+/g, '_')
-                            .replace(/_+/g, '_')
-                            .replace(/^_|_$/, ''),
-                    ) ?? null
-                  : null
-              )
-              return (
-                <li key={role} className="card card-role">
-                <div className="card-head">{role}</div>
-                {m ? (
-                  <>
-                    <p className="card-body">{m.content}</p>
-                    <div className="meta">
-                      round {m.round} · confidence {m.confidence}
-                    </div>
-                  </>
-                ) : (
-                  <p className="card-muted">No message (skipped or fault injection)</p>
-                )}
-              </li>
-              )
-            })}
-          </ol>
-
-          <h2 className="section-title">Participants (Dynamic)</h2>
-          <ol className="timeline">
-            {participants.map((p, idx) => (
-              <li key={`${p.sender}-${idx}`} className="card card-role">
-                <div className="card-head">{p.sender}</div>
-                <p className="card-body">{p.content}</p>
-                <div className="meta">
-                  round {p.round} · confidence {p.confidence}
+      <div className="dashboard">
+        {activeView === 'create-agent' ? (
+          <CreateAgentPage initialAgent={customAgent} onCancel={() => setActiveView('dashboard')} onSave={handleSaveAgent} />
+        ) : (
+          <div className="main-container">
+            {/* Left Column */}
+            <motion.div initial={{ x: -60, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ duration: 0.6 }}>
+              {/* Debate Form */}
+              <div className="card">
+                <div className="card-header">
+                  <Lightbulb size={20} />
+                  <h2>Start a Debate</h2>
                 </div>
-              </li>
-            ))}
-          </ol>
-
-          <div className="card final card-highlight">
-            <div className="card-head">Final answer</div>
-            <p className="card-body">{finalAnswer || '—'}</p>
-          </div>
-
-                <div className="metrics">
-                  <div className="card metric">
-                    <div className="card-head">Agreement score</div>
-                    <p className="card-body mono">
-                      {agreementScore !== null ? agreementScore.toFixed(2) : '—'}
-                    </p>
+                <form className="form-debate" onSubmit={runDebate}>
+                  <div className="form-field">
+                    <label>Your Question</label>
+                    <textarea
+                      className="input-large textarea"
+                      placeholder="Ask something thought-provoking..."
+                      value={question}
+                      onChange={(e) => setQuestion(e.target.value)}
+                      disabled={runStatus === 'running'}
+                      required
+                    />
                   </div>
-                  <div className="card metric">
-                    <div className="card-head">Failed nodes</div>
-                    <p className="card-body mono">
-                      {failedNodes.length ? failedNodes.join(', ') : '—'}
-                    </p>
-                  </div>
-                </div>
-              </section>
-            </div>
 
-            <aside className="dashboard-side">
-              <nav className="past-runs-nav panel panel-subtle" aria-label="Past debates">
-                <div className="past-runs-head">
-                  <span className="past-runs-title">Past runs</span>
-                  <button type="button" className="nav-refresh" onClick={() => fetchPastRuns()}>
-                    Refresh
-                  </button>
-                </div>
-                {pastRunsError ? <p className="past-runs-error">{pastRunsError}</p> : null}
-                <div className="past-runs-scroll past-runs-scroll-side" role="list">
-                  <button
-                    type="button"
-                    className={`nav-pill${selectedRunId === null ? ' nav-pill-active' : ''}`}
-                    onClick={() => selectNewDraft()}
-                    disabled={runStatus === 'running'}
-                  >
-                    New draft
-                  </button>
-                  {displayPastRuns.map((run) => {
-                    const st = (run.status || '').toLowerCase()
-                    const badge =
-                      st === 'failed' ? 'failed' : st === 'completed' ? 'completed' : 'other'
-                    const isMock = String(run.debate_id).startsWith('mock-')
-                    return (
-                      <button
-                        key={run.debate_id}
-                        type="button"
-                        role="listitem"
-                        className={`nav-pill${selectedRunId === run.debate_id ? ' nav-pill-active' : ''}${
-                          isMock ? ' nav-pill-mock' : ''
-                        }`}
-                        title={isMock ? `${run.question ?? ''} (demo mock)` : run.question ?? ''}
-                        onClick={() => loadPastRun(run.debate_id)}
+                  <div className="form-row">
+                    <div className="form-field">
+                      <label>Max Rounds</label>
+                      <input
+                        className="input-md"
+                        type="number"
+                        min={1}
+                        max={MAX_ROUNDS_LIMIT}
+                        value={maxRounds}
+                        onChange={(e) => setMaxRounds(e.target.value)}
                         disabled={runStatus === 'running'}
+                      />
+                    </div>
+                    <div className="form-field">
+                      <label>Failure Mode</label>
+                      <select className="input-md" value={failure} onChange={(e) => setFailure(e.target.value)} disabled={runStatus === 'running'}>
+                        <option value="none">None</option>
+                        <option value="advocate">Advocate</option>
+                        <option value="critic">Critic</option>
+                        <option value="moderator">Moderator</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <label className="checkbox-wrapper">
+                    <input type="checkbox" checked={includeCustomAgent} onChange={(e) => setIncludeCustomAgent(e.target.checked)} disabled={!customAgent || runStatus === 'running'} />
+                    <span>Include my custom agent</span>
+                  </label>
+
+                  <motion.button className="btn-primary btn-large" type="submit" disabled={runStatus === 'running'} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                    {runStatus === 'running' ? '⚡ Running Debate...' : '▶ Start Debate'}
+                  </motion.button>
+                </form>
+              </div>
+
+              {/* Past Debates */}
+              {displayPastRuns.length > 0 && (
+                <motion.div className="card" initial={{ y: 40, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: 0.2 }}>
+                  <div className="card-header">
+                    <Trophy size={18} />
+                    <h3>Past Debates</h3>
+                  </div>
+                  <div className="runs-scroll">
+                    {displayPastRuns.map((run) => (
+                      <motion.button
+                        key={run.id}
+                        className={`run-card ${selectedRunId === run.id ? 'active' : ''}`}
+                        onClick={() => loadPastRun(run.id)}
+                        whileHover={{ x: 8 }}
+                        transition={{ type: 'spring', stiffness: 300 }}
                       >
-                        {isMock ? <span className="nav-pill-demo-badge">Demo</span> : null}
-                        <span className={`nav-pill-status nav-pill-status-${badge}`}>{run.status}</span>
-                        {formatRunPillLabel(run.created_at, run.question ?? '')}
-                      </button>
-                    )
-                  })}
+                        <div className="run-date">{run.created_at}</div>
+                        <div className="run-question">{run.question}</div>
+                      </motion.button>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+            </motion.div>
+
+            {/* Right Column - Results */}
+            <motion.div initial={{ x: 60, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ duration: 0.6 }}>
+              <div className="card">
+                <div className="results-header">
+                  <div className="header-left">
+                    <Activity size={20} />
+                    <h2>Debate Results</h2>
+                  </div>
+                  <motion.span 
+                    className={`status-badge status-${runStatus}`} 
+                    animate={runStatus === 'running' ? { opacity: [1, 0.6, 1] } : {}} 
+                    transition={{ duration: 1.5, repeat: Infinity }}
+                  >
+                    {statusLabel}
+                  </motion.span>
                 </div>
-                {displayPastRuns.length === 0 && !pastRunsError ? (
-                  <p className="past-runs-empty">No saved runs yet — run a debate to populate this list.</p>
-                ) : null}
-              </nav>
-            </aside>
+
+                {error && (
+                  <motion.div className="alert-error" initial={{ y: -10 }} animate={{ y: 0 }}>
+                    <AlertCircle size={16} />
+                    <span>{error}</span>
+                  </motion.div>
+                )}
+
+                {/* Metrics */}
+                {(agreementScore !== null || finalAnswer || messages.length > 0) && (
+                  <motion.div className="metrics-showcase" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 }}>
+                    {agreementScore !== null && (
+                      <motion.div className="metric-box" whileHover={{ y: -8 }}>
+                        <div className="metric-icon">🎯</div>
+                        <div className="metric-label">Agreement</div>
+                        <div className="metric-value">{(agreementScore * 100).toFixed(1)}%</div>
+                      </motion.div>
+                    )}
+                    {messages.length > 0 && (
+                      <motion.div className="metric-box" whileHover={{ y: -8 }}>
+                        <div className="metric-icon">💬</div>
+                        <div className="metric-label">Messages</div>
+                        <div className="metric-value">{messages.length}</div>
+                      </motion.div>
+                    )}
+                    <motion.div className="metric-box" whileHover={{ y: -8 }}>
+                      <div className="metric-icon">🔄</div>
+                      <div className="metric-label">Rounds</div>
+                      <div className="metric-value">{currentRound || maxRounds}</div>
+                    </motion.div>
+                  </motion.div>
+                )}
+
+                {/* Visualizations: round-by-round winners (real data) */}
+                {roundVisualizations.length > 0 && (
+                  <motion.div
+                    className="visualizations-section"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ delay: 0.3 }}
+                  >
+                    <RoundWinnersTimeline rounds={roundVisualizations} />
+                  </motion.div>
+                )}
+
+                {/* Cross-run history (line chart x=runs, y=scores) */}
+                {runHistory.length > 0 && <RunHistoryChart history={runHistory} />}
+
+                {/* Live progress strip while running */}
+                <LiveProgressStrip
+                  rounds={roundVisualizations}
+                  currentRound={currentRound}
+                  maxRounds={parseInt(String(maxRounds).trim(), 10) || undefined}
+                  status={runStatus}
+                />
+
+                {/* Cross-round performance trend */}
+                {roundVisualizations.length > 0 && (
+                  <MultiRoundPerformance rounds={roundVisualizations} />
+                )}
+
+                {/* Round Visualizations */}
+                {roundVisualizations.length > 0 && (
+                  <motion.div className="rounds-visualizations" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                    {roundVisualizations.map((round, idx) => (
+                      <RoundVisualization key={`round-${idx}`} round={round} />
+                    ))}
+                  </motion.div>
+                )}
+
+                {/* Final Answer */}
+                {finalAnswer && (() => {
+                  const { clean, raw } = extractCleanAnswer(finalAnswer)
+                  return (
+                    <motion.div
+                      className="final-answer-box"
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.5 }}
+                    >
+                      <div className="answer-header">✨ Consensus Reached</div>
+                      <p className="answer-text" style={{ whiteSpace: 'pre-wrap' }}>{clean}</p>
+                      {raw && (
+                        <details style={{ marginTop: 12 }}>
+                          <summary style={{ cursor: 'pointer', fontSize: 12, color: 'rgba(255,255,255,0.55)' }}>
+                            Show raw debate state
+                          </summary>
+                          <pre
+                            style={{
+                              marginTop: 8,
+                              maxHeight: 240,
+                              overflow: 'auto',
+                              background: 'rgba(0,0,0,0.35)',
+                              padding: 12,
+                              borderRadius: 8,
+                              fontSize: 11,
+                              color: 'rgba(255,255,255,0.7)',
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-word',
+                            }}
+                          >
+                            {raw}
+                          </pre>
+                        </details>
+                      )}
+                    </motion.div>
+                  )
+                })()}
+
+                {/* Final Winner Display */}
+                {runStatus === 'completed' && roundVisualizations.length > 0 && (
+                  <FinalWinnerDisplay 
+                    rounds={roundVisualizations} 
+                    finalAnswer={extractCleanAnswer(finalAnswer).clean}
+                    agreementScore={agreementScore}
+                    question={question}
+                  />
+                )}
+
+                {/* Timeline */}
+                {messages.length > 0 && (
+                  <motion.div className="timeline-section" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6 }}>
+                    <h4 className="timeline-title">💭 Debate Timeline</h4>
+                    <div className="timeline-list">
+                      {timelineRoles.map((role, idx) => {
+                        const m = messageFor(messages, role)
+                        return (
+                          <motion.div key={role} className="timeline-entry" initial={{ x: -20, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ delay: idx * 0.1 }}>
+                            <div className="timeline-dot">{idx + 1}</div>
+                            <div className="timeline-content">
+                              <div className="timeline-role">{role}</div>
+                              <p className="timeline-text">{m ? m.content.substring(0, 150) + '...' : 'No statement'}</p>
+                              {m && <span className="timeline-meta">Round {m.round}</span>}
+                            </div>
+                          </motion.div>
+                        )
+                      })}
+                    </div>
+                  </motion.div>
+                )}
+              </div>
+            </motion.div>
           </div>
         )}
       </div>
