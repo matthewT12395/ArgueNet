@@ -150,7 +150,9 @@ def _normalize_argument_payload(payload: dict, *, agent_id: str, round_num: int,
         out["sources"] = [text] if text else []
 
     out["confidence"] = float(out.get("confidence", 0.6))
-    out["position_delta"] = float(out.get("position_delta", 0.05))
+    # Default to a value above CONVERGENCE_THRESHOLD (0.05) so a missing field
+    # doesn't artificially trigger convergence on the first round.
+    out["position_delta"] = float(out.get("position_delta", 0.2))
 
     targets = out.get("targets", [])
     if not isinstance(targets, list):
@@ -193,7 +195,7 @@ def _argument_from_text(text: str, *, agent_id: str, round_num: int, default_tar
         "argument": cleaned,
         "claims": [cleaned[:280]],
         "confidence": 0.55,
-        "position_delta": 0.03,
+        "position_delta": 0.2,
         "sources": [],
     }
 
@@ -249,7 +251,7 @@ async def _invoke(agent, prompt: str, schema, *, retry_msg: str, agent_id: str, 
         argument="Fallback argument generated to satisfy debate schema.",
         claims=["Fallback claim"],
         confidence=0.5,
-        position_delta=0.01,
+        position_delta=0.2,
         sources=[],
     )
 

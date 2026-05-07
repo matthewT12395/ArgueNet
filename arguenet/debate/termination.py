@@ -13,7 +13,9 @@ def semantic_similarity(left: str, right: str) -> float:
 
 
 def is_converged(history: list[list[Argument]]) -> bool:
-    return len(history) >= 1 and sum(a.position_delta for a in history[-1]) / max(1, len(history[-1])) < CONVERGENCE_THRESHOLD
+    # Require at least 2 completed rounds before convergence can be declared,
+    # so a single noisy/fallback round can't end the debate immediately.
+    return len(history) >= 2 and sum(a.position_delta for a in history[-1]) / max(1, len(history[-1])) < CONVERGENCE_THRESHOLD
 
 
 def is_stalemate(history: list[list[Argument]]) -> bool:

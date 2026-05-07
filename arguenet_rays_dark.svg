@@ -1,0 +1,29 @@
+<svg width="240" height="240" viewBox="0 0 240 240" xmlns="http://www.w3.org/2000/svg">
+  <title>ArgueNet mark</title>
+  <desc>Six rays converging on a central node — three teal, three coral, alternating around a hexagonal perimeter.</desc>
+
+  <rect width="240" height="240" rx="24" fill="#0B1E3F"/>
+
+  <g transform="translate(120,120)">
+    <line x1="0" y1="-72" x2="0" y2="-14" stroke="#5EEAD4" stroke-width="2.5" stroke-linecap="round"/>
+    <circle cx="0" cy="-72" r="6" fill="#5EEAD4"/>
+
+    <line x1="62" y1="-36" x2="12" y2="-7" stroke="#F97362" stroke-width="2.5" stroke-linecap="round"/>
+    <circle cx="62" cy="-36" r="6" fill="#F97362"/>
+
+    <line x1="62" y1="36" x2="12" y2="7" stroke="#5EEAD4" stroke-width="2.5" stroke-linecap="round"/>
+    <circle cx="62" cy="36" r="6" fill="#5EEAD4"/>
+
+    <line x1="0" y1="72" x2="0" y2="14" stroke="#F97362" stroke-width="2.5" stroke-linecap="round"/>
+    <circle cx="0" cy="72" r="6" fill="#F97362"/>
+
+    <line x1="-62" y1="36" x2="-12" y2="7" stroke="#5EEAD4" stroke-width="2.5" stroke-linecap="round"/>
+    <circle cx="-62" cy="36" r="6" fill="#5EEAD4"/>
+
+    <line x1="-62" y1="-36" x2="-12" y2="-7" stroke="#F97362" stroke-width="2.5" stroke-linecap="round"/>
+    <circle cx="-62" cy="-36" r="6" fill="#F97362"/>
+
+    <circle cx="0" cy="0" r="11" fill="#F4B942"/>
+    <circle cx="0" cy="0" r="11" fill="none" stroke="#0B1E3F" stroke-width="2"/>
+  </g>
+</svg>

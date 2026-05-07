@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Trophy, AlertCircle, Activity, Lightbulb } from 'lucide-react'
+import { Trophy, AlertCircle, Activity, Lightbulb, Bot, User, Users } from 'lucide-react'
 import './App.css'
 import LoginScreen from './LoginScreen.jsx'
 import CreateAgentPage from './CreateAgentPage.jsx'
+import FriendsPage, { NETWORK as FRIENDS_NETWORK } from './FriendsPage.jsx'
 import {
   RoundVisualization,
   FinalWinnerDisplay,
@@ -16,7 +17,9 @@ import { getMockDebateDetail, mergePastRunSummaries, MOCK_LIVE_LOG_SNIPPET } fro
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 const SESSION_KEY = 'arguenet_demo_session'
-const CUSTOM_AGENT_KEY = 'arguenet_custom_agent'
+const CUSTOM_AGENT_KEY = 'arguenet_custom_agent' // legacy single-agent slot (migrated)
+const CUSTOM_AGENTS_KEY = 'arguenet_custom_agents'
+const FRIENDS_KEY = 'arguenet_friends'
 const THEME_KEY = 'arguenet_theme'
 const RUN_HISTORY_KEY = 'arguenet_run_history'
 const RUN_HISTORY_MAX = 20
@@ -115,26 +118,66 @@ function saveTheme(theme) {
   localStorage.setItem(THEME_KEY, theme)
 }
 
-function loadCustomAgent() {
+function loadFriends() {
+  try {
+    const raw = localStorage.getItem(FRIENDS_KEY)
+    if (!raw) return []
+    const arr = JSON.parse(raw)
+    return Array.isArray(arr) ? arr : []
+  } catch {
+    return []
+  }
+}
+
+function saveFriends(friends) {
+  localStorage.setItem(FRIENDS_KEY, JSON.stringify(friends))
+}
+
+function loadCustomAgents() {
+  // New: list of custom agents (each {id,name,persona,hobbies,opinions,communicationStyle}).
+  try {
+    const raw = localStorage.getItem(CUSTOM_AGENTS_KEY)
+    if (raw) {
+      const arr = JSON.parse(raw)
+      if (Array.isArray(arr)) {
+        return arr
+          .filter((a) => a && typeof a.name === 'string' && a.name.trim())
+          .map((a) => ({
+            id: a.id || `custom_${Math.random().toString(36).slice(2, 9)}`,
+            name: a.name.trim(),
+            persona: typeof a.persona === 'string' ? a.persona.trim() : '',
+            hobbies: typeof a.hobbies === 'string' ? a.hobbies.trim() : '',
+            opinions: typeof a.opinions === 'string' ? a.opinions.trim() : '',
+            communicationStyle:
+              typeof a.communicationStyle === 'string' ? a.communicationStyle.trim() : '',
+          }))
+      }
+    }
+  } catch {}
+  // Migration: legacy single agent under CUSTOM_AGENT_KEY → first item in new list.
   try {
     const raw = localStorage.getItem(CUSTOM_AGENT_KEY)
-    if (!raw) return null
+    if (!raw) return []
     const parsed = JSON.parse(raw)
-    if (typeof parsed?.name !== 'string' || !parsed.name.trim()) return null
-    return {
+    if (typeof parsed?.name !== 'string' || !parsed.name.trim()) return []
+    const migrated = [{
+      id: `custom_${Math.random().toString(36).slice(2, 9)}`,
       name: parsed.name.trim(),
       persona: typeof parsed.persona === 'string' ? parsed.persona.trim() : '',
       hobbies: typeof parsed.hobbies === 'string' ? parsed.hobbies.trim() : '',
       opinions: typeof parsed.opinions === 'string' ? parsed.opinions.trim() : '',
-      communicationStyle: typeof parsed.communicationStyle === 'string' ? parsed.communicationStyle.trim() : '',
-    }
+      communicationStyle:
+        typeof parsed.communicationStyle === 'string' ? parsed.communicationStyle.trim() : '',
+    }]
+    try { localStorage.setItem(CUSTOM_AGENTS_KEY, JSON.stringify(migrated)) } catch {}
+    return migrated
   } catch {
-    return null
+    return []
   }
 }
 
-function saveCustomAgent(agent) {
-  localStorage.setItem(CUSTOM_AGENT_KEY, JSON.stringify(agent))
+function saveCustomAgents(list) {
+  localStorage.setItem(CUSTOM_AGENTS_KEY, JSON.stringify(list))
 }
 
 const ROLES = ['advocate', 'critic', 'moderator']
@@ -230,13 +273,74 @@ export default function App() {
   const [pastRuns, setPastRuns] = useState([])
   const [selectedRunId, setSelectedRunId] = useState(null)
   const [pastRunsError, setPastRunsError] = useState(null)
-  const [customAgent, setCustomAgent] = useState(() => loadCustomAgent())
-  const [includeCustomAgent, setIncludeCustomAgent] = useState(true)
+  const [customAgents, setCustomAgents] = useState(() => loadCustomAgents())
+  const [friends, setFriends] = useState(() => loadFriends())
+  const [selectedAgentIds, setSelectedAgentIds] = useState([])
+  const [agentSearch, setAgentSearch] = useState('')
+
+  // Unified roster: custom agents (created via Create Agent) + saved friends.
+  // Each entry has the same shape so the search/selector treats them identically.
+  const selectableAgents = useMemo(() => {
+    const customs = customAgents.map((a) => ({
+      id: a.id,
+      kind: 'custom',
+      name: a.name,
+      role: 'Custom agent',
+      avatar: (a.name || '?').split(' ').filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?',
+      color: '#a855f7',
+      bio: a.persona,
+      hobbies: a.hobbies,
+      beliefs: a.opinions,
+      style: a.communicationStyle,
+      tags: ['custom'],
+    }))
+    const fr = friends.map((f) => ({
+      id: f.id,
+      kind: 'friend',
+      name: f.name,
+      role: f.role,
+      avatar: f.avatar,
+      color: f.color,
+      bio: f.bio,
+      hobbies: f.hobbies,
+      beliefs: f.beliefs,
+      style: f.style,
+      tags: f.tags || [],
+    }))
+    // Also surface friends from the Friends directory that haven't been added yet,
+    // so the main-page search can find and select them directly.
+    const savedIds = new Set(friends.map((f) => f.id))
+    const directory = FRIENDS_NETWORK
+      .filter((f) => !savedIds.has(f.id))
+      .map((f) => ({
+        id: f.id,
+        kind: 'friend',
+        isDirectory: true,
+        name: f.name,
+        role: f.role,
+        avatar: f.avatar,
+        color: f.color,
+        bio: f.bio,
+        hobbies: f.hobbies,
+        beliefs: f.beliefs,
+        style: f.style,
+        tags: f.tags || [],
+      }))
+    return [...customs, ...fr, ...directory]
+  }, [customAgents, friends])
+
+  const selectedAgents = useMemo(
+    () => selectableAgents.filter((a) => selectedAgentIds.includes(a.id)),
+    [selectableAgents, selectedAgentIds],
+  )
 
   const timelineRoles = useMemo(() => {
-    if (!customAgent || !includeCustomAgent) return ROLES
-    return [...ROLES, customAgent.name]
-  }, [customAgent, includeCustomAgent])
+    const extras = []
+    selectedAgents.forEach((a) => {
+      if (a.name && !extras.includes(a.name)) extras.push(a.name)
+    })
+    return [...ROLES, ...extras]
+  }, [selectedAgents])
 
   useEffect(() => {
     const el = liveLogRef.current
@@ -367,12 +471,21 @@ export default function App() {
     const n = parseInt(String(maxRounds).trim(), 10)
     const rounds = Number.isFinite(n) && n >= 1 ? Math.min(MAX_ROUNDS_LIMIT, Math.max(1, n)) : DEFAULT_MAX_ROUNDS
 
+    const friendAgents = selectedAgents.map((a) => ({
+      name: a.name,
+      background: a.bio ?? '',
+      hobbies: a.hobbies ?? '',
+      beliefs: a.beliefs ?? '',
+      communication_style: a.style ?? '',
+    }))
+
     const body = {
       question: question.trim(),
       simulate_failure: failure !== 'none',
       failed_node: failure === 'none' ? null : failure,
       max_rounds: rounds,
-      custom_agent: customAgent && includeCustomAgent ? customAgent : null,
+      personal_agent: null,
+      personal_agents: friendAgents,
     }
 
     try {
@@ -409,7 +522,6 @@ export default function App() {
           // Debug: log every stream event received from backend
           console.log('[stream]', ev.event, ev)
           if (ev.event === 'log' && typeof ev.text === 'string') {
-            // Don't render raw text in UI — only use it to track current round.
             const roundMatch = ev.text.match(/ROUND (\d+)/)
             if (roundMatch) setCurrentRound(parseInt(roundMatch[1], 10))
           } else if ((ev.event === 'round' && ev.round_data) || ev.event === 'round_complete') {
@@ -494,10 +606,50 @@ export default function App() {
   }
 
   function handleSaveAgent(agent) {
-    setCustomAgent(agent)
-    setIncludeCustomAgent(true)
-    saveCustomAgent(agent)
+    // Append new custom agent (or update if same name) and auto-select it
+    // for the next debate run.
+    setCustomAgents((prev) => {
+      const existingIdx = prev.findIndex((a) => a.name.toLowerCase() === agent.name.toLowerCase())
+      let next
+      let id
+      if (existingIdx >= 0) {
+        id = prev[existingIdx].id
+        next = prev.map((a, i) => (i === existingIdx ? { ...a, ...agent, id } : a))
+      } else {
+        id = `custom_${Math.random().toString(36).slice(2, 9)}`
+        next = [...prev, { id, ...agent }]
+      }
+      saveCustomAgents(next)
+      setSelectedAgentIds((sel) => (sel.includes(id) ? sel : [...sel, id]))
+      return next
+    })
     setActiveView('dashboard')
+  }
+
+  function handleSaveFriends(updated) {
+    setFriends(updated)
+    saveFriends(updated)
+  }
+
+  function handleAddFriendToSession(friend) {
+    // Add to friends list (if new) and auto-select for the next debate run.
+    setFriends((prev) => {
+      const existing = prev.find((f) => f.id === friend.id || f.name === friend.name)
+      if (existing) {
+        setSelectedAgentIds((sel) => (sel.includes(existing.id) ? sel : [...sel, existing.id]))
+        return prev
+      }
+      const next = [...prev, friend]
+      saveFriends(next)
+      setSelectedAgentIds((sel) => (sel.includes(friend.id) ? sel : [...sel, friend.id]))
+      return next
+    })
+    setActiveView('dashboard')
+  }
+
+  function isFriendInSession(friend) {
+    const f = friends.find((x) => x.id === friend.id || x.name === friend.name)
+    return !!f && selectedAgentIds.includes(f.id)
   }
 
   if (!session) {
@@ -514,11 +666,28 @@ export default function App() {
       <motion.header className="premium-header" initial={{ y: -60 }} animate={{ y: 0 }} transition={{ duration: 0.6 }}>
         <div className="header-wrapper">
           <div className="brand-premium">
-            <motion.span className="brand-icon-premium" animate={{ rotate: 360 }} transition={{ duration: 4, repeat: Infinity, ease: 'linear' }}>
-              ◈
+            <motion.span className="brand-icon-premium" animate={{ rotate: 360 }} transition={{ duration: 8, repeat: Infinity, ease: 'linear' }}>
+              <svg width="28" height="28" viewBox="0 0 240 240" xmlns="http://www.w3.org/2000/svg">
+                <g transform="translate(120,120)">
+                  <line x1="0" y1="-72" x2="0" y2="-14" stroke="#FFFFFF" strokeWidth="8" strokeLinecap="round" />
+                  <circle cx="0" cy="-72" r="14" fill="#FFFFFF" />
+                  <line x1="62" y1="-36" x2="12" y2="-7" stroke="#F97362" strokeWidth="8" strokeLinecap="round" />
+                  <circle cx="62" cy="-36" r="14" fill="#F97362" />
+                  <line x1="62" y1="36" x2="12" y2="7" stroke="#FFFFFF" strokeWidth="8" strokeLinecap="round" />
+                  <circle cx="62" cy="36" r="14" fill="#FFFFFF" />
+                  <line x1="0" y1="72" x2="0" y2="14" stroke="#F97362" strokeWidth="8" strokeLinecap="round" />
+                  <circle cx="0" cy="72" r="14" fill="#F97362" />
+                  <line x1="-62" y1="36" x2="-12" y2="7" stroke="#FFFFFF" strokeWidth="8" strokeLinecap="round" />
+                  <circle cx="-62" cy="36" r="14" fill="#FFFFFF" />
+                  <line x1="-62" y1="-36" x2="-12" y2="-7" stroke="#F97362" strokeWidth="8" strokeLinecap="round" />
+                  <circle cx="-62" cy="-36" r="14" fill="#F97362" />
+                  <circle cx="0" cy="0" r="22" fill="#F4B942" />
+                </g>
+              </svg>
             </motion.span>
             <div className="brand-info">
               <h1>ArgueNet</h1>
+              <p>✨ AI-Powered Multi-Agent Debate Platform</p>
               <p>✨ AI-Powered Multi-Agent Debate Platform</p>
             </div>
           </div>
@@ -531,16 +700,25 @@ export default function App() {
                 </option>
               ))}
             </select>
-            <motion.button 
-              className="btn-secondary" 
+            <motion.button
+              className="btn-secondary"
               onClick={() => setActiveView(activeView === 'dashboard' ? 'create-agent' : 'dashboard')}
               whileHover={{ scale: 1.05, y: -2 }}
               whileTap={{ scale: 0.95 }}
             >
-              {activeView === 'dashboard' ? '🤖 Create Agent' : '← Back'}
+              {activeView === 'create-agent' ? '← Back' : <><Bot size={15} style={{ marginRight: 5 }} />Create Agent</>}
+            </motion.button>
+            <motion.button
+              className={`btn-secondary${activeView === 'friends' ? ' btn-secondary--active' : ''}`}
+              onClick={() => setActiveView(activeView === 'friends' ? 'dashboard' : 'friends')}
+              whileHover={{ scale: 1.05, y: -2 }}
+              whileTap={{ scale: 0.95 }}
+            >
+              <Users size={15} style={{ marginRight: 5 }} />
+              {activeView === 'friends' ? '← Back' : 'Friends'}
             </motion.button>
             <div className="user-badge">
-              <span className="user-avatar">👤</span>
+              <span className="user-avatar"><User size={13} /></span>
               <span className="user-name">{session.username}</span>
             </div>
             <motion.button 
@@ -557,7 +735,9 @@ export default function App() {
 
       <div className="dashboard">
         {activeView === 'create-agent' ? (
-          <CreateAgentPage initialAgent={customAgent} onCancel={() => setActiveView('dashboard')} onSave={handleSaveAgent} />
+          <CreateAgentPage onCancel={() => setActiveView('dashboard')} onSave={handleSaveAgent} />
+        ) : activeView === 'friends' ? (
+          <FriendsPage friends={friends} onSave={handleSaveFriends} onAddToSession={handleAddFriendToSession} isInSession={isFriendInSession} onBack={() => setActiveView('dashboard')} />
         ) : (
           <div className="main-container">
             {/* Left Column */}
@@ -605,10 +785,172 @@ export default function App() {
                     </div>
                   </div>
 
-                  <label className="checkbox-wrapper">
-                    <input type="checkbox" checked={includeCustomAgent} onChange={(e) => setIncludeCustomAgent(e.target.checked)} disabled={!customAgent || runStatus === 'running'} />
-                    <span>Include my custom agent</span>
-                  </label>
+                  {selectableAgents.length > 0 && (() => {
+                    const q = agentSearch.trim().toLowerCase()
+                    // Default view hides directory-only friends; they appear once the user searches
+                    // (or once they've been selected, so the chip stays visible).
+                    const baseList = q
+                      ? selectableAgents
+                      : selectableAgents.filter((a) => !a.isDirectory || selectedAgentIds.includes(a.id))
+                    const filtered = q
+                      ? baseList.filter((a) =>
+                          [a.name, a.role, a.bio, a.style, a.beliefs, ...(a.tags || [])]
+                            .filter(Boolean)
+                            .some((s) => String(s).toLowerCase().includes(q)),
+                        )
+                      : baseList
+                    return (
+                    <div className="form-field" style={{ marginTop: 4 }}>
+                      <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span>Add agents to this debate</span>
+                        {selectedAgentIds.length > 0 && (
+                          <button
+                            type="button"
+                            className="btn-ghost"
+                            style={{ fontSize: 11, padding: '2px 8px' }}
+                            onClick={() => setSelectedAgentIds([])}
+                            disabled={runStatus === 'running'}
+                          >
+                            Clear ({selectedAgentIds.length})
+                          </button>
+                        )}
+                      </label>
+                      <div style={{ position: 'relative', marginBottom: 6 }}>
+                        <input
+                          type="search"
+                          className="question-input"
+                          placeholder="Search custom agents and friends by name, role, or topic..."
+                          value={agentSearch}
+                          onChange={(e) => setAgentSearch(e.target.value)}
+                          disabled={runStatus === 'running'}
+                          style={{ width: '100%', fontSize: 12, padding: '6px 28px 6px 10px' }}
+                        />
+                        {agentSearch && (
+                          <button
+                            type="button"
+                            onClick={() => setAgentSearch('')}
+                            style={{
+                              position: 'absolute',
+                              right: 6,
+                              top: '50%',
+                              transform: 'translateY(-50%)',
+                              background: 'transparent',
+                              border: 'none',
+                              color: 'rgba(255,255,255,0.55)',
+                              cursor: 'pointer',
+                              fontSize: 14,
+                              lineHeight: 1,
+                              padding: '2px 6px',
+                            }}
+                            title="Clear search"
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))',
+                          gap: 6,
+                          maxHeight: 180,
+                          overflowY: 'auto',
+                          padding: 6,
+                          border: '1px solid rgba(255,255,255,0.08)',
+                          borderRadius: 8,
+                          background: 'rgba(0,0,0,0.15)',
+                        }}
+                      >
+                        {filtered.length === 0 && (
+                          <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)', margin: '6px 4px', gridColumn: '1 / -1' }}>
+                            No agents match “{agentSearch}”.
+                          </p>
+                        )}
+                        {filtered.map((a) => {
+                          const checked = selectedAgentIds.includes(a.id)
+                          return (
+                            <label
+                              key={a.id}
+                              className="checkbox-wrapper"
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 6,
+                                padding: '4px 6px',
+                                margin: 0,
+                                borderRadius: 6,
+                                background: checked ? 'rgba(99,102,241,0.15)' : 'transparent',
+                                cursor: runStatus === 'running' ? 'not-allowed' : 'pointer',
+                                opacity: runStatus === 'running' ? 0.6 : 1,
+                              }}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={runStatus === 'running'}
+                                onChange={(e) => {
+                                  setSelectedAgentIds((prev) =>
+                                    e.target.checked
+                                      ? [...prev, a.id]
+                                      : prev.filter((id) => id !== a.id),
+                                  )
+                                }}
+                              />
+                              <span
+                                style={{
+                                  display: 'inline-block',
+                                  width: 18,
+                                  height: 18,
+                                  borderRadius: '50%',
+                                  background: a.color || '#6366f1',
+                                  color: '#fff',
+                                  fontSize: 9,
+                                  fontWeight: 700,
+                                  textAlign: 'center',
+                                  lineHeight: '18px',
+                                  flexShrink: 0,
+                                }}
+                              >
+                                {a.avatar || (a.name || '?').slice(0, 2).toUpperCase()}
+                              </span>
+                              <span
+                                style={{
+                                  fontSize: 12,
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                  flex: 1,
+                                }}
+                                title={a.name}
+                              >
+                                {a.name}
+                              </span>
+                              <span
+                                style={{
+                                  fontSize: 9,
+                                  padding: '1px 5px',
+                                  borderRadius: 4,
+                                  fontWeight: 600,
+                                  letterSpacing: 0.3,
+                                  flexShrink: 0,
+                                  background: a.kind === 'custom' ? 'rgba(168,85,247,0.22)' : 'rgba(16,185,129,0.22)',
+                                  color: a.kind === 'custom' ? '#d8b4fe' : '#6ee7b7',
+                                }}
+                              >
+                                {a.kind === 'custom' ? 'CUSTOM' : 'FRIEND'}
+                              </span>
+                            </label>
+                          )
+                        })}
+                      </div>
+                      {selectedAgentIds.length > 0 && (
+                        <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)', marginTop: 4 }}>
+                          {selectedAgentIds.length} agent{selectedAgentIds.length === 1 ? '' : 's'} will join the debate as additional speakers.
+                        </p>
+                      )}
+                    </div>
+                    )
+                  })()}
 
                   <motion.button className="btn-primary btn-large" type="submit" disabled={runStatus === 'running'} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
                     {runStatus === 'running' ? '⚡ Running Debate...' : '▶ Start Debate'}
