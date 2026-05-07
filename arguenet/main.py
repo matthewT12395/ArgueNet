@@ -25,6 +25,7 @@ async def main(
     personal_agent_profile: dict[str, str] | None = None,
     personal_agent_profiles: list[dict[str, str]] | None = None,
     selected_example_agents: list[str] | None = None,
+    on_round: "callable | None" = None,
 ) -> dict:
 
     max_rounds = int(os.getenv("ARGUENET_MAX_ROUNDS", str(MAX_ROUNDS)))
@@ -95,6 +96,13 @@ async def main(
         history.append(current)
         all_scores = scores
         all_round_scores.append(round_score)
+
+        # Notify external observers (orchestrator stream) with the per-round result.
+        if on_round is not None:
+            try:
+                on_round(round_score.model_dump())
+            except Exception as cb_exc:  # pragma: no cover
+                print(f"[on_round callback error] {cb_exc}")
 
         # Check termination
         done, reason = should_terminate(round_num, history, current)

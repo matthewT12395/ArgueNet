@@ -32,22 +32,38 @@ try:
 except ImportError:
     pass
 
-from arguenet.kafka_main import main as run_arguenet_main
-from arguenet.messaging.health import ensure_topics
+from arguenet.main import main as _run_main
+try:
+    from arguenet.kafka_main import main as _run_kafka_main  # type: ignore
+except Exception:  # pragma: no cover - kafka deps optional
+    _run_kafka_main = None  # type: ignore
+try:
+    from arguenet.messaging.health import ensure_topics  # type: ignore
+except Exception:  # pragma: no cover - kafka deps optional
+    ensure_topics = None  # type: ignore
+
+
+def _debate_runner():
+    """Return kafka_main.main when ARGUENET_USE_KAFKA=1, else arguenet.main.main."""
+    if os.getenv("ARGUENET_USE_KAFKA", "0") == "1" and _run_kafka_main is not None:
+        return _run_kafka_main
+    return _run_main
 
 
 @contextlib.asynccontextmanager
 async def _lifespan(app_: FastAPI):
-    """Ensure all Kafka topics exist before accepting requests."""
-    try:
-        # Confluent Cloud requires replication_factor=3; local Kafka uses 1.
-        bs = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-        rf = 3 if ".confluent.cloud" in bs else 1
-        status = ensure_topics(replication_factor=rf)
-        for topic, state in status.items():
-            print(f"[kafka] {topic}: {state}")
-    except Exception as exc:
-        print(f"[kafka] topic setup warning: {exc}")
+    """Optionally ensure Kafka topics exist. Disabled unless ARGUENET_USE_KAFKA=1."""
+    if os.getenv("ARGUENET_USE_KAFKA", "0") == "1" and ensure_topics is not None:
+        try:
+            bs = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+            rf = 3 if ".confluent.cloud" in bs else 1
+            status = ensure_topics(replication_factor=rf)
+            for topic, state in status.items():
+                print(f"[kafka] {topic}: {state}")
+        except Exception as exc:
+            print(f"[kafka] topic setup warning: {exc}")
+    else:
+        print("[kafka] disabled (set ARGUENET_USE_KAFKA=1 to enable topic setup)")
     yield
 
 
@@ -158,14 +174,23 @@ def _run_debate_with_stdout_tee(
     arguenet_logger.addHandler(stream_handler)
     arguenet_logger.setLevel(_logging.INFO)
 
+    def _on_round(round_score: dict) -> None:
+        # Push a structured event into the NDJSON stream so the frontend
+        # can render round-by-round visualizations without screen-scraping.
+        try:
+            log_q.put({"event": "round_complete", **round_score})
+        except Exception:
+            pass
+
     try:
         with _max_rounds_env(max_rounds):
             outcome["result"] = asyncio.run(
-                run_arguenet_main(
+                _debate_runner()(
                     question,
                     personal_agent_profile=personal_agent_profile,
                     personal_agent_profiles=personal_agent_profiles,
                     selected_example_agents=selected_example_agents,
+                    on_round=_on_round,
                 )
             )
     except Exception as exc:
@@ -417,7 +442,7 @@ def execute_debate(
     try:
         with _max_rounds_env(max_rounds):
             pipeline_result = asyncio.run(
-                run_arguenet_main(
+                _debate_runner()(
                     question,
                     personal_agent_profile=personal_agent_profile,
                     personal_agent_profiles=personal_agent_profiles,
