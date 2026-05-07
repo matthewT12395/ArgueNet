@@ -10,6 +10,8 @@ load_dotenv()
 
 import pytest
 
+pytestmark = [pytest.mark.integration, pytest.mark.kafka]
+
 # ── 1. Kafka broker connectivity ──────────────────────────────────────────────
 
 def test_kafka_broker_reachable():
