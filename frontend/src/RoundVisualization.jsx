@@ -26,6 +26,13 @@ const AGENT_COLORS = {
 
 const colorFor = (agent) => AGENT_COLORS[agent] || AGENT_COLORS.default
 
+// Backend emits scores in [0, 1]; charts render on a 0–100 axis.
+// Auto-scale: values <= 1 are treated as fractions and converted to percentage.
+const toPct = (v) => {
+  if (typeof v !== 'number' || Number.isNaN(v)) return 0
+  return v <= 1 ? v * 100 : v
+}
+
 const prettyName = (agent) =>
   String(agent || '')
     .replace(/_/g, ' ')
@@ -44,12 +51,12 @@ export function RoundVisualization({ round }) {
     .map(([agent, score]) => ({
       name: prettyName(agent),
       rawName: agent,
-      score: typeof score === 'number' ? score : 0,
+      score: toPct(score),
       isWinner: agent === winner,
     }))
     .sort((a, b) => b.score - a.score)
 
-  const winnerScore = allScores[winner]
+  const winnerScore = toPct(allScores[winner])
 
   return (
     <motion.div
@@ -170,7 +177,7 @@ export function MultiRoundPerformance({ rounds }) {
     const row = { round: `R${r.round}` }
     agents.forEach((agent) => {
       const v = r.all_scores?.[agent]
-      row[agent] = typeof v === 'number' ? v : null
+      row[agent] = typeof v === 'number' ? toPct(v) : null
     })
     return row
   })
@@ -312,7 +319,7 @@ export function FinalWinnerDisplay({ rounds, finalAnswer, agreementScore }) {
       if (!cumulativeScores[agent]) {
         cumulativeScores[agent] = { totalScore: 0, roundCount: 0, wins: 0 }
       }
-      cumulativeScores[agent].totalScore += score
+      cumulativeScores[agent].totalScore += toPct(score)
       cumulativeScores[agent].roundCount += 1
       if (round.winner === agent) cumulativeScores[agent].wins += 1
     })
@@ -488,7 +495,7 @@ export function RunHistoryChart({ history }) {
     }
     agents.forEach((agent) => {
       const v = run.agentAverages?.[agent]
-      row[agent] = typeof v === 'number' ? v : null
+      row[agent] = typeof v === 'number' ? toPct(v) : null
     })
     return row
   })
@@ -503,7 +510,7 @@ export function RunHistoryChart({ history }) {
     history.forEach((run) => {
       const v = run.agentAverages?.[agent]
       if (typeof v === 'number') {
-        total += v
+        total += toPct(v)
         count += 1
       }
       if (run.winner === agent) wins += 1
@@ -727,7 +734,8 @@ export function RoundWinnersTimeline({ rounds }) {
       >
         {rounds.map((r, idx) => {
           const winner = r.winner
-          const score = winner ? r.all_scores?.[winner] : null
+          const rawScore = winner ? r.all_scores?.[winner] : null
+          const score = typeof rawScore === 'number' ? toPct(rawScore) : null
           const c = colorFor(winner)
           return (
             <motion.div

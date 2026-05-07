@@ -6,8 +6,20 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/debate': 'http://127.0.0.1:8000',
-      '/health': 'http://127.0.0.1:8000',
+      '/debate': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+        timeout: 600000,
+        proxyTimeout: 600000,
+      },
+      '/debates': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+      },
+      '/health': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+      },
     },
   },
 })
