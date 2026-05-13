@@ -484,6 +484,10 @@ class KafkaDebateRunner:
         selected_example_agents: list[str] | None = None,
         on_round: "callable | None" = None,
     ) -> dict:
+        """
+        Executes a multi-round debate for the given question.
+        Returns the final consensus result dict.
+        """
         debate_id = str(uuid.uuid4())
         trace_id = str(uuid.uuid4())   # one trace_id per debate — flows through every envelope
         max_rounds = int(os.getenv("ARGUENET_MAX_ROUNDS", str(MAX_ROUNDS)))
