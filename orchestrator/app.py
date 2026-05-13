@@ -303,6 +303,7 @@ def _extract_role_texts(result: dict) -> dict[str, str]:
 
 
 def _build_messages(result: dict, failed_nodes: List[str], round_num: int) -> List[dict]:
+    """Build a list of messages from the pipeline result."""
     now = datetime.utcnow().isoformat()
     role_text = _extract_role_texts(result)
     messages: List[dict] = []
@@ -481,6 +482,9 @@ def execute_debate(
 # ----------------------------
 @app.get("/health")
 def health_check():
+    """
+    Check the health status of the Orchestrator service.
+    """
     return {"status": "ok", "service": "orchestrator"}
 
 
