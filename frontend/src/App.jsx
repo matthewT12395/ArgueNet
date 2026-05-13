@@ -146,10 +146,15 @@ function messageFor(messages, role) {
   return messages.find((m) => m.sender === role) ?? null
 }
 
-// Try to extract a clean prose consensus from whatever the backend returned.
-// Many runs put a fenced JSON debate-state blob in final_answer; we surface
-// the most useful field (claim / final_answer / answer / summary) and hide
-// the raw payload behind a toggle.
+/**
+ * Try to extract a clean prose consensus from whatever the backend returned.
+ * Many runs put a fenced JSON debate-state blob in final_answer; we surface
+ * the most useful field (claim / final_answer / answer / summary) and hide
+ * the raw payload behind a toggle.
+ *
+ * @param {string} text - The raw final_answer text from the backend
+ * @returns {{ clean: string, raw: string }} An object with the cleaned prose and the raw string if hidden.
+ */
 function extractCleanAnswer(text) {
   if (!text || typeof text !== 'string') return { clean: '', raw: '' }
   const raw = text.trim()
