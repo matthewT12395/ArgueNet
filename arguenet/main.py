@@ -27,6 +27,10 @@ async def main(
     selected_example_agents: list[str] | None = None,
     on_round: "callable | None" = None,
 ) -> dict:
+    """
+    Main debate loop for the non-Kafka orchestrator.
+    Runs multiple rounds, collects arguments and scores, and generates a final consensus.
+    """
 
     max_rounds = int(os.getenv("ARGUENET_MAX_ROUNDS", str(MAX_ROUNDS)))
     print("max rounds ", max_rounds)
