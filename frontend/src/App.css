@@ -85,8 +85,8 @@ button { font-family: inherit; }
   inset: -3px;
   border-radius: 14px;
   background: conic-gradient(from 0deg, var(--accent), var(--accent-2), var(--accent-3), var(--accent));
-  filter: blur(8px);
-  opacity: 0.45;
+  filter: blur(10px);
+  opacity: 0.55;
   z-index: -1;
   animation: spin-slow 6s linear infinite;
 }
@@ -162,7 +162,8 @@ button { font-family: inherit; }
 }
 .btn-primary:hover:not(:disabled)::after { transform: translateX(100%); }
 .btn-primary:hover:not(:disabled) {
-  box-shadow: 0 16px 32px var(--accent-glow), 0 0 0 1px var(--accent) inset;
+  box-shadow: 0 16px 36px var(--accent-glow), 0 0 0 1px var(--accent) inset;
+  transform: translateY(-2px);
 }
 .btn-primary:disabled {
   opacity: 0.6;

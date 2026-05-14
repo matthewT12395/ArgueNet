@@ -519,7 +519,7 @@ export default function App() {
             </motion.span>
             <div className="brand-info">
               <h1>ArgueNet</h1>
-              <p>🚀 AI-Powered Multi-Agent Debate Platform</p>
+              <p>✨ AI-Powered Multi-Agent Debate Platform</p>
             </div>
           </div>
 
@@ -573,7 +573,7 @@ export default function App() {
                     <label>Your Question</label>
                     <textarea
                       className="input-large textarea"
-                      placeholder="Ask something thought-provoking..."
+                      placeholder="Ask a thought-provoking question for the AI agents to debate..."
                       value={question}
                       onChange={(e) => setQuestion(e.target.value)}
                       disabled={runStatus === 'running'}
