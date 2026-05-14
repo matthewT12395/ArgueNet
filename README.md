@@ -2,6 +2,12 @@
 
 Multi-agent debate system built with LangChain and OpenRouter-backed models.
 
+## Architecture
+
+![System Architecture](SystemArchitechture.png)
+
+![Voting Architecture](VotingArchitechture.png)
+
 ## Setup
 
 ```bash
