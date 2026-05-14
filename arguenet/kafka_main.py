@@ -534,7 +534,7 @@ class KafkaDebateRunner:
                 flat_history = [a for round_args in history for a in round_args]
 
                 # ── argue ────────────────────────────────────────────────────
-                print("Running arguments...")
+                print("🗣️  [Agents] Running arguments...")
                 arguments = await _run_argue_phase(
                     debate_id=debate_id,
                     round_num=round_num,
@@ -549,10 +549,10 @@ class KafkaDebateRunner:
                     loop=loop,
                     trace_id=trace_id,
                 )
-                print("Arguments completed")
+                print("✅ [Agents] Arguments completed")
 
                 # ── score (intermediate) ──────────────────────────────────────
-                print("Scoring arguments...")
+                print("⚖️  [Moderator] Scoring arguments...")
                 mid_scores = await _run_score_phase(
                     debate_id=debate_id,
                     round_num=round_num,
@@ -567,7 +567,7 @@ class KafkaDebateRunner:
                 )
 
                 # ── rebut ─────────────────────────────────────────────────────
-                print("Running rebuttals...")
+                print("🗣️  [Agents] Running rebuttals...")
                 rebuttals = await _run_rebut_phase(
                     debate_id=debate_id,
                     round_num=round_num,
@@ -583,10 +583,10 @@ class KafkaDebateRunner:
                     loop=loop,
                     trace_id=trace_id,
                 )
-                print("Rebuttals completed")
+                print("✅ [Agents] Rebuttals completed")
 
                 # ── final score ───────────────────────────────────────────────
-                print("Scoring arguments...")
+                print("⚖️  [Moderator] Scoring rebuttals...")
                 final_scores = await _run_score_phase(
                     debate_id=debate_id,
                     round_num=round_num,
@@ -599,10 +599,10 @@ class KafkaDebateRunner:
                     loop=loop,
                     trace_id=trace_id,
                 )
-                print("Scoring completed")
+                print("✅ [Moderator] Scoring completed")
 
                 # ── scorer: fact-check, rank, and generate next-round feedback ─
-                print("Running fact-checking and ranking evaluation...")
+                print("🔍 [Scorer] Running fact-checking and ranking evaluation...")
                 round_score = await _run_scorer_phase(
                     debate_id=debate_id,
                     round_num=round_num,
@@ -615,7 +615,7 @@ class KafkaDebateRunner:
                     loop=loop,
                     trace_id=trace_id,
                 )
-                print(f"Scorer results: Winner = {round_score.winner}, Summary = {round_score.summary}")
+                print(f"🏅 [Scorer] Results: Winner = {round_score.winner}, Summary = {round_score.summary}")
                 current_feedback = round_score.feedback_for_agents
 
                 # Print rankings matching main.py output format

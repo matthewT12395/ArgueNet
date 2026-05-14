@@ -61,19 +61,19 @@ async def main(
         print(f"{'='*80}")
 
         # Run the debate round (with feedback from previous round if available)
-        print("Running arguments...")
+        print("🗣️  [Agents] Running arguments...")
         current = await run_round(round_num, question, agents, [a for round_args in history for a in round_args], all_scores, feedback=current_feedback)
-        print("Arguments completed")
+        print("✅ [Agents] Arguments completed")
 
         # Score the arguments
-        print("Scoring arguments...")
+        print("⚖️  [Moderator] Scoring arguments...")
         scores = await score_round(round_num, question, agents["moderator"], current, [a for round_args in history for a in round_args])
-        print("Scoring completed")
+        print("✅ [Moderator] Scoring completed")
 
         # Run the scorer agent to generate feedback
-        print("Running fact-checking and ranking evaluation...")
+        print("🔍 [Scorer] Running fact-checking and ranking evaluation...")
         round_score = await run_scorer(round_num, question, agents["scorer"], current, scores, [a for round_args in history for a in round_args])
-        print(f"Scorer results: Winner = {round_score.winner}, Summary = {round_score.summary}")
+        print(f"🏅 [Scorer] Results: Winner = {round_score.winner}, Summary = {round_score.summary}")
 
         # Print rankings
         print(f"\n{'='*80}")
