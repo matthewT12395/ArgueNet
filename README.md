@@ -1,6 +1,5 @@
 # **Demo video:** [Watch on YouTube](https://youtu.be/druNQJ4TGB0)
 # **Live deployment:** [argue-41ud0zg50-matthewt12395s-projects.vercel.app](https://argue-41ud0zg50-matthewt12395s-projects.vercel.app/)
-
 # ArgueNet
 
 Multi-agent debate system built with LangChain and OpenRouter-backed models.
